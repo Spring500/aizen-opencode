@@ -1,0 +1,20 @@
+{
+  "compilerOptions": {
+    "outDir": "dist",
+    "rootDir": "src",
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "target": "esnext",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "paths": {
+      "@/*": ["./src/*"],
+      "@opencode-ai/sdk": ["../OpenCode/packages/sdk/js/src/index.ts"],
+      "@opencode-ai/sdk/v2": ["../OpenCode/packages/sdk/js/src/v2/index.ts"],
+      "@opencode-ai/sdk/v2/client": ["../OpenCode/packages/sdk/js/src/v2/client.ts"]
+    }
+  },
+  "include": ["src"]
+}
