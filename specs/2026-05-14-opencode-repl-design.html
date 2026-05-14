@@ -1,0 +1,464 @@
+﻿<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+</head>
+<body>
+<script type="text/x-markdown">
+# opencode-repl 设计规范
+
+**日期**：2026-05-14 · **状态**：Draft — 待审阅
+
+## 1. 动机
+
+OpenCode 全功能 TUI 在以下场景体验不佳：
+
+- **翻页/滚动响应缓慢**，大量历史消息时明显卡顿
+- **远程（SSH）连接下经常失去响应**，长连接 + 终端渲染在弱网下脆弱
+
+需要一个**短连接、纯文本输出的 REPL 工具**，每次 prompt 交互期间才建立连接，交互结束即断开，远程友好。
+
+## 2. 总览
+
+:::mermaid
+flowchart LR
+  A["opencode-repl<br/>readline REPL<br/>纯文本 · 内存状态"] -->|"HTTP (仅 prompt 期间保持连接)"| B["opencode serve<br/>持有 session 状态 (SQLite)"]
+:::
+
+**关键设计决策**：
+
+- **短连接**：仅在 prompt 执行期间建立 SSE 连接。打字时、命令执行时无连接。
+- **无持久化**：REPL 自身不存文件，退出即丢弃上下文。所有会话状态由 serve 管理。
+- **两层 slash**：本地命令管理 REPL 自身（`/switch`、`/history`），未识别的透传给 serve 由 AI 执行（`/review`、`/test`、`/compact` 等）。
+
+!!! Tip /compact 不需要本地处理
+    服务端已内置 `/compact` 等 slash command。在 REPL 中输入 `/compact` 会被识别为"未匹配的本地命令"，自动透传给 `opencode serve` 执行。REPL 只需关心自己独有的控制功能。
+
+## 3. 完整状态机
+
+### 3.1 状态图
+
+:::mermaid
+stateDiagram-v2
+    [*] --> connecting : 程序启动
+    connecting --> idle : session 就绪
+    connecting --> exiting : 连接失败 / 无法创建 session
+
+    idle --> streaming : 发送 prompt
+    idle --> session_pick : /switch 无参 / /fork 无参
+    idle --> exiting : /quit / Ctrl+C
+
+    streaming --> idle : session.status.idle
+    streaming --> await_perm : permission.asked
+    streaming --> idle : Ctrl+C (abort)
+
+    await_perm --> streaming : 用户回答 (y/n/a)
+    await_perm --> idle : Ctrl+C (abort)
+
+    session_pick --> idle : 选择完成 / 取消
+
+    exiting --> [*] : process.exit
+:::
+
+### 3.2 idle — 就绪
+
+**含义**：等用户输入。无活跃连接。
+
+**提示符**：`> ` （绿色）
+
+**可接受输入**：
+
+| 输入 | 行为 | 需要通信 |
+|------|------|----------|
+| 空行 | 忽略，重新显示提示符 | — |
+| `\` 结尾的行 | 进入多行输入子模式 | — |
+| 多行输入中 `.` 单独一行 | 结束多行输入，发送累积内容 | — |
+| `/xxx` 开头 | slash 命令路由 | 见下表 |
+| 其他普通文本 | 作为 prompt 发送 | 进入 streaming |
+
+**多行输入子模式**（保持在 idle 内部）：
+
+```
+> \                   ← 反斜杠续行，提示符变为 >
+> 第二行内容
+> 第三行
+> .                   ← 单独 . 结束，发送合并后的内容
+```
+
+若 `\` 后直接以 `.` 结束（buffer 为空），视为取消多行输入，回到 idle。
+
+### 3.3 streaming — 流式接收
+
+**含义**：正在接收 AI 回复。SSE 连接活跃中。
+
+**提示符**：无。流式输出进行中。
+
+**可接受输入**：仅 Ctrl+C（abort 当前 session → idle）。
+
+**事件处理循环**：
+
+```
+for await (event of events.stream):
+├─ message.updated          → 首次收到 assistant 消息时打印头部
+│                              "AI · <agent> · <modelID>"
+├─ message.part.updated
+│  ├─ type: "text"          → process.stdout.write(text)
+│  ├─ type: "tool"
+│  │  ├─ running            → "  ⚙ <tool> · <title>"  (cyan)
+│  │  ├─ completed          → "  ⚙ <tool> · <title>  ✓"  (green)
+│  │  │                       缩进打印 output (dim)
+│  │  └─ error              → "  ✗ <tool> · <title>  ✗"  (red)
+│  │                       缩进打印 error
+│  ├─ type: "reasoning"     → 若 --thinking: "  · <text>"  (dim italic)
+│  └─ type: step-start/finish → 忽略
+├─ permission.asked
+│  ├─ pattern 在 session.approved 中 → 自动 reply("always") → 继续循环
+│  └─ 否则 → 暂停流 → 进入 await_perm
+├─ question.asked           → 暂停流，展示问题，接受用户文本回复
+│                              → POST /question/:id/reply { answer: text }
+│                              → 继续循环
+├─ session.error            → 打印错误 (red bold) → 继续循环
+└─ session.status.idle      → break → 回到 idle
+```
+
+**进入**：idle 中发送 prompt 后。
+**退出**：收到 idle 事件 / Ctrl+C / 连接错误。
+
+### 3.4 await_perm — 等待权限审批
+
+**含义**：AI 请求执行操作（如删除文件、执行 shell），暂停流式输出，等待用户决定。
+
+**提示符**：`⚠ 批准？ [y=本次 / n=拒绝 / a=始终允许] > `
+
+**显示**：
+
+```
+  ⚠ 请求授权: bash(rm -rf dist/)
+```
+
+**可接受输入**：
+
+| 输入 | 行为 | 通信 |
+|------|------|------|
+| `y` | 批准本次 → 发送 `reply: "once"` → streaming | `POST /permission/{requestID}/reply` |
+| `n` | 拒绝本次 → 发送 `reply: "reject"` → streaming | 同上 |
+| `a` | 始终允许 → 发送 `reply: "always"`，将 pattern 存入 `session.approved` → streaming | 同上 |
+| Ctrl+C | abort session → idle | `POST /session/:id/abort` |
+
+**permission.asked 事件负载**：
+
+```
+{
+  id:            string    // requestID，回复时使用
+  permission:    string    // "bash" | "file_write" | ...
+  patterns:     string[]   // 匹配模式，如 ["rm -rf dist/"]
+}
+```
+
+**进入**：streaming 中收到 `permission.asked` 且 pattern 不在 `session.approved` 中。
+**退出**：用户回答后回到 streaming；Ctrl+C 到 idle。
+**SSE 中断**：若 await_perm 期间连接断开 → 打印 `⚠ 连接中断，权限请求可能已被拒绝` → idle。
+
+### 3.5 session_pick — 会话选择器
+
+**含义**：交互式会话列表，用于 `/switch` 或 `/fork` 不带参数时选择目标。
+
+**展示**（使用 `@inquirer/prompts`）：
+
+```
+┌  选择会话
+│
+◆  [1] 调研 OpenCode 纯 CLI 界面       · 11:18 今天
+   [2] 维护 openCode 内部 fork          · 10:57 · 5/12
+   [3] 分析模型 API 多模态支持          · 12:20 · 5/7
+   ...
+```
+
+**可接受输入**：上/下箭头移动、回车确认、Esc 取消。
+
+**通信流程**：
+
+```
+进入 → GET /session?directory=<path>&roots=true
+选择后：
+  /switch 触发 → 更新 session.id → idle
+  /fork 触发   → POST /session/:selectedID/fork → 更新 session → idle
+取消 → idle
+```
+
+**进入**：idle 中 `/switch` 或 `/fork` 不带参数。
+**退出**：选择完成或取消。
+
+### 3.6 connecting — 启动连接
+
+**含义**：启动时验证连接并加载/创建 session。
+
+**展示**：
+
+```
+opencode-repl v1.0.0
+
+正在连接 http://localhost:4096 ...
+已连接 · session: 调研 OpenCode (ses_xxx)
+```
+
+**逻辑**：
+
+```
+1. createOpencodeClient({ baseUrl, directory })
+2. 选 session：
+   ├─ --session <id>  → GET /session/:id 验证存在
+   ├─ --new           → POST /session { title }
+   └─ 其他             → GET /session?directory=&roots=true&limit=1
+                         ├─ 有结果 → 用最新
+                         └─ 无结果 → POST /session 新建
+3. 填充 session.title
+```
+
+**进入**：程序启动。
+**退出**：成功 → idle；失败 → 打印错误 → exiting。
+
+### 3.7 exiting — 退出
+
+**逻辑**：
+1. 若有活跃 SSE → `POST /session/:id/abort`
+2. 关闭 readline
+3. `process.exit(0)`
+
+**进入**：任意状态中 `/quit`、`/exit`、idle 中 Ctrl+C，或 streaming 中 Ctrl+C 两次。
+
+## 4. Slash 命令详表
+
+### 4.1 本地命令（REPL 自身处理）
+
+| 命令 | 行为 | 状态变化 | 通信 |
+|------|------|----------|------|
+| `/quit`, `/exit` | 退出程序 | → exiting | — |
+| `/sessions [n]` | 打印会话列表表格，n 限制数量 | 保持 idle | `GET /session?directory=&limit=n` |
+| `/switch <id>` | 切换到指定 session，切换时清空 `session.approved` | 保持 idle | — |
+| `/switch` | 进入选择器 | → session_pick | `GET /session` |
+| `/new [title]` | 新建 session 并切换，清空 `session.files` 和 `session.approved` | 保持 idle | `POST /session` |
+| `/fork [messageID]` | 从当前 session fork，切换至新 session，清空 `session.approved` | 保持 idle | `POST /session/:id/fork` |
+| `/fork` | 先选择目标 session 再 fork，清空 `session.approved` | → session_pick → idle | `GET /session` + `POST /session/:id/fork` |
+| `/history [n]` | 打印最近 n 条消息（默认 10） | 保持 idle | `GET /session/:id/message?limit=n` |
+| `/file <path>` | 添加文件到附件列表 | 保持 idle | — |
+| `/files` | 打印当前附件列表 | 保持 idle | — |
+| `/clear-files` | 清空附件列表 | 保持 idle | — |
+| `/model <provider/model>` | 设置模型覆盖 | 保持 idle | — |
+| `/model` | 打印当前模型 | 保持 idle | — |
+| `/info` | 打印当前 session 详情（标题、ID、目录、模型、附件数） | 保持 idle | `GET /session/:id` |
+
+### 4.2 透传命令（发给 serve）
+
+凡是 `/xxx` 不在上述本地命令列表中的，**自动透传给 serve** 作为 slash command：
+
+```
+> /review          → POST /session/:id/command { command: "review" }
+> /test            → POST /session/:id/command { command: "test" }
+> /lint            → POST /session/:id/command { command: "lint" }
+> /compact         → POST /session/:id/command { command: "compact" }
+> /release minor   → POST /session/:id/command { command: "release", arguments: "minor" }
+```
+
+发送后进入 streaming 状态等待 AI 执行完成。
+
+!!! Note 路由优先级
+    本地命令优先匹配。如果未来 serve 新增 slash command 与本地命令重名（不太可能发生），可在本地命令表中显式做转发。
+
+## 5. 数据模型
+
+```ts
+// === 全局配置（启动时确定，不变） ===
+config: {
+  serverUrl:   string    // --url, default "http://localhost:4096"
+  directory:   string    // --dir, default process.cwd()
+  thinking:    boolean   // --thinking
+  newSession:  boolean   // --new
+  initSession: string    // --session (初始 session ID)
+}
+
+// === 当前会话上下文（可随 /switch /fork /new 变化） ===
+session: {
+  id:       string       // sessionID, e.g. "ses_xxx"
+  title:    string       // 会话标题
+  model?:   string       // 可选模型覆盖 (provider/model)
+  files:    string[]     // 附件路径列表
+  approved: Set<string>  // "始终允许"的权限 pattern 集合；/switch /new /fork 时清空
+}
+
+// === 多行输入缓冲（idle 内部） ===
+multiline: {
+  active: boolean
+  buffer: string[]
+}
+```
+
+全部纯内存，进程退出即丢弃。
+
+## 6. 服务端通信参考
+
+### 6.1 SDK 客户端
+
+```ts
+import { createOpencodeClient } from "@opencode-ai/sdk/v2"
+
+const sdk = createOpencodeClient({
+  baseUrl: config.serverUrl,
+  directory: config.directory,
+})
+// 每个操作可复用同一实例。SDK 内部无长连接，每次调用是独立 HTTP 请求。
+```
+
+### 6.2 完整通信明细
+
+| # | 操作 | HTTP method + path | 请求体/参数 | 状态 |
+|---|------|--------------------|-------------|------|
+| 1 | 启动 - 列最新 session | `GET /session` | `?directory=&roots=true&limit=1` | connecting |
+| 2 | 新建 session | `POST /session` | `{ title? }` (+ `?directory=` query) | connecting / idle |
+| 3 | 获取 session 详情 (`/info`) | `GET /session/:id` | — | idle |
+| 4 | 列 sessions | `GET /session` | `?directory=&limit=n` | idle / session_pick |
+| 5 | 事件订阅 | `sdk.event.subscribe()` | — | streaming 前 |
+| 6 | 发送 prompt | `POST /session/:id/message` | `{ parts, model?, agent? }` | streaming |
+| 7 | 获取历史消息 | `GET /session/:id/message` | `?limit=n` | idle |
+| 8 | 发送 slash command | `POST /session/:id/command` | `{ command, arguments? }` | streaming |
+| 9 | 权限回复 | `POST /permission/{requestID}/reply` | `{ reply: "once"\|"always"\|"reject" }` | await_perm |
+| 10 | Abort session | `POST /session/:id/abort` | — | streaming/exiting |
+| 11 | Fork session | `POST /session/:id/fork` | `{ messageID? }` | idle / session_pick |
+| 12 | 问题回复 | `POST /question/{id}/reply` | `{ answer: string }` | streaming |
+
+### 6.3 streaming 中的关键 SSE 事件
+
+| 事件类型 | 用途 | 处理 |
+|----------|------|------|
+| `message.updated` | 消息元信息（角色、agent、modelID） | 首次收到时打印 AI 头部 |
+| `message.part.updated` (type: `text`) | AI 回复文本 | 增量写 stdout |
+| `message.part.updated` (type: `tool`) | Tool call 状态更新 | 渲染 running/completed/error |
+| `message.part.updated` (type: `reasoning`) | 推理过程 | 若 `--thinking` 则打印 |
+| `message.part.updated` (type: `step-start`/`step-finish`) | 步骤边界 | 忽略 |
+| `permission.asked` | 权限请求 | 若 pattern 在 approved 中 → 自动 reply("always")；否则 → await_perm |
+| `question.asked` | AI 向用户提问 | 暂停流，展示问题，接受用户文本输入，`POST /question/{id}/reply` → 继续循环 |
+| `session.error` | 会话错误 | 打印错误 |
+| `session.status` (type: `idle`) | AI 完成 | 退出 streaming，回到 idle |
+
+## 7. 输出格式化
+
+### 7.1 颜色方案
+
+| 元素 | 颜色 | picocolors 调用 |
+|------|------|----------------|
+| AI 回复正文 | 默认 | — |
+| thinking | 灰 + 斜体 | `dim(italic(...))` |
+| tool · running | 青 | `cyan(...)` |
+| tool · done | 绿 | `green(...)` |
+| tool · error | 红 | `red(...)` |
+| tool output | 暗灰 | `dim(...)` |
+| 权限请求 | 黄加粗 | `yellow(bold(...))` |
+| 错误消息 | 红加粗 | `red(bold(...))` |
+| 分隔线 ── | 暗灰 | `dim(...)` |
+| 提示符 > | 绿 | `green(">")` |
+| session 信息 | 蓝 | `blue(...)` |
+| /history user | 青 | `cyan("You:")` |
+| /history AI | 绿 | `green("AI:")` |
+
+### 7.2 /history 输出样例
+
+```
+──────────── 最近 10 条消息 ────────────
+
+You:  调研 OpenCode 是否有比 tui 更简单的纯 cli 界面？
+AI:   有。OpenCode 提供了 opencode run 子命令...
+
+You:  opencode有help吗？
+AI:   支持。opencode --help 查看所有子命令...
+
+────────────────────────────────────────
+```
+
+**截断策略**：单条消息超过 120 字符时截断为 `前 117 字符...`，不换行。消息内部换行保留。
+
+### 7.3 /sessions 输出样例
+
+复用 `opencode session list` 表格格式：
+
+```
+Session ID                      Title                              Updated
+────────────────────────────────────────────────────────────────────────
+ses_xxx...              调研 OpenCode 纯 CLI                    11:18
+ses_yyy...              维护 openCode 内部 fork                   10:57 · 5/12
+```
+
+**截断策略**：标题超过 25 字符时截断为 `前 22 字符...`。Session ID 超过 20 字符时截断为 `前 17 字符...`。
+
+## 8. CLI 参数
+
+```
+opencode-repl [options]
+
+Options:
+  --url <url>           opencode serve 地址，默认 http://localhost:4096
+  --dir <path>          项目目录，默认当前目录
+  --session <id>        指定初始 session ID
+  --new                 强制新建 session
+  --thinking            显示 thinking/reasoning 块
+  --help, -h            显示帮助
+  --version, -v         显示版本
+```
+
+## 9. 错误处理
+
+| 场景 | 处理 | 目标状态 |
+|------|------|----------|
+| 无法连接 serve | 打印错误，退出 | exiting |
+| 启动时无 session 且无法创建 | 打印错误，退出 | exiting |
+| SSE 连接中断（streaming 中） | 打印 `⚠ 连接中断`，serve 端继续处理。用户可用 `/info` 查状态或直接发空 prompt 续接。 | idle |
+| SSE 连接中断（await_perm 中） | 打印 `⚠ 连接中断，权限请求可能已被拒绝` | idle |
+| Ctrl+C 在 streaming 中 | abort session → 打印 `已中断` | idle |
+| Ctrl+C 在 idle 中 | 直接退出 | exiting |
+| Ctrl+C 在 await_perm 中 | abort → 打印 `已中断` | idle |
+| 透传 slash 失败 | 打印错误 | idle |
+| permission 回复失败 | 打印错误，默认拒绝，继续 streaming | streaming |
+
+## 10. 项目结构
+
+```
+opencode-repl/
+├── package.json
+├── tsconfig.json
+├── src/
+│   ├── index.ts            # 入口：解析 CLI 参数，初始化，进入 REPL
+│   ├── repl.ts             # 主循环：状态机调度 + readline 交互
+│   ├── state.ts            # config / session / multiline 数据定义
+│   ├── commands/
+│   │   ├── slash.ts        # slash 命令路由（本地匹配 → 处理；未匹配 → 透传）
+│   │   └── prompt.ts       # 发送 prompt + SSE 事件循环 + 权限交互
+│   ├── format.ts           # 格式化输出 + picocolors 颜色
+│   └── client.ts           # SDK 客户端工厂
+```
+
+**依赖**：
+
+```
+dependencies:
+  @opencode-ai/sdk          # v2 HTTP SDK
+  picocolors                # 终端颜色
+  @inquirer/prompts         # session_pick 交互式选择
+
+devDependencies:
+  typescript
+  @types/node
+```
+
+`readline` 为 Node 内置模块。
+
+## 11. 开放问题
+
+1. 是否需要 `/connect <url>` 命令支持在 REPL 运行时切换 serve 地址？
+2. `/history` 是否需要翻页支持（`/history --offset 10 -n 20`）？
+3. `session_pick` 是否需要搜索/过滤功能（当 session 数量很多时）？
+4. 多行输入：除了 `\` 续行 + `.` 结束，是否需要支持粘贴模式（直接粘贴多行自动检测）？
+
+</script>
+<script src="https://spring500.github.io/enhanced-doc/enhanced-doc.js"></script>
+</body>
+</html>

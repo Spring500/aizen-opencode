@@ -1,0 +1,820 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>opencode-repl 测试计划</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
+<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/marked-gfm-heading-id/lib/index.umd.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/tocbot@4/dist/tocbot.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/svg-pan-zoom@3.6.1/dist/svg-pan-zoom.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-svg.js"></script>
+<script>
+mermaid.initialize({startOnLoad:false,theme:'dark',
+  themeVariables:{primaryColor:'#2a3555',primaryBorderColor:'#5b8def',primaryTextColor:'#e1e4ed',lineColor:'#5b8def',fontSize:'14px'},
+  flowchart:{useMaxWidth:false,htmlLabels:true,curve:'basis'},sequence:{useMaxWidth:false}});
+</script>
+
+<script type="text/x-markdown">
+# opencode-repl 测试计划
+
+**日期**：2026-05-14 · **版本**：v1.0 · **关联规范**：[opencode-repl 设计规范](./2026-05-14-opencode-repl-design.html)
+
+## 0. 总览
+
+本测试计划覆盖 opencode-repl 的三个测试层次：
+
+:::mermaid
+flowchart TD
+  A[测试金字塔] --> B[Part 1: 单元测试]
+  A --> C[Part 2: 集成测试]
+  A --> D[Part 3: 人工验收]
+
+  B --> B1[state.ts — 数据模型]
+  B --> B2[format.ts — 输出格式化]
+  B --> B3[slash.ts — 命令路由]
+  B --> B4[prompt.ts — SSE 事件循环]
+  B --> B5[client.ts — SDK 工厂]
+
+  C --> C1[完整 REPL 周期]
+  C --> C2[权限交互]
+  C --> C3[SSE 断开恢复]
+  C --> C4[Session 管理]
+  C --> C5[错误处理]
+
+  D --> D1[启动 & 连接]
+  D --> D2[Session 管理]
+  D --> D3[Prompt & 回复]
+  D --> D4[权限审批]
+  D --> D5[错误恢复]
+:::
+
+!!! Tip 测试框架
+    所有自动化测试使用 `bun:test`（`describe`/`test`/`expect`），与其他 opencode 包保持一致。集成测试中 SDK 客户端使用 mock 实现，不依赖真实 `opencode serve` 进程。
+
+---
+
+## Part 1: 单元测试
+
+### 1.1 state.ts — 数据模型 & 状态转换
+
+**测试目标**：验证 session / config / multiline 数据结构的创建和状态合法性。
+
+#### 1.1.1 session 初始化
+
+| 测试用例 | 输入 | 期望输出 |
+|----------|------|----------|
+| 新建空 session | `createSession("ses_001", "测试")` | `{ id: "ses_001", title: "测试", files: [], approved: Set {} }` |
+| 带 model 的 session | `createSession("ses_002", "标题", "openai/gpt-4o")` | `model` 字段为 `"openai/gpt-4o"` |
+| 带附件列表 | `createSession("ses_003", "标题", undefined, ["a.ts","b.ts"])` | `files` 为 `["a.ts", "b.ts"]` |
+| approved 默认空 Set | 任何新 session | `approved` 为 `Set {}`，`approved.has("rm")` → `false` |
+
+#### 1.1.2 session 修改（不变量验证）
+
+| 测试用例 | 操作 | 期望行为 |
+|----------|------|----------|
+| 切换 session 清空 approved + 更新 title | `switchSession(newId, newTitle)` | `session.approved.size` 变为 `0`，`session.id` 变为 `newId`，`session.title` 变为 `newTitle` |
+| 设置模型 | `setModel("openai/gpt-4o")` | `session.model` 为 `"openai/gpt-4o"` |
+| 新建 session 清空 files | `newSession("ses_new", "新标题")` | `session.files` 为 `[]` |
+| Fork session 清空 approved | `forkSession("ses_fork", "fork标题")` | `session.approved.size` 为 `0` |
+| 添加附件 | `addFile("src/foo.ts")` | `session.files` 包含 `"src/foo.ts"` |
+| 重复附件去重 | `addFile("src/foo.ts")` 两次 | `session.files` 中 `"src/foo.ts"` 仅出现一次 |
+| 清空附件 | `clearFiles()` | `session.files` 为 `[]` |
+| 添加权限 pattern | `approvePattern("rm -rf dist/")` | `session.approved.has("rm -rf dist/")` → `true` |
+
+#### 1.1.3 multiline 缓冲
+
+| 测试用例 | 输入 | 期望输出 |
+|----------|------|----------|
+| 初始状态 | 新建 multiline buffer | `{ active: false, buffer: [] }` |
+| 进入多行模式 | `startMultiline()` | `active: true, buffer: []` |
+| 追加行 | `pushLine("第一行")` + `pushLine("第二行")` | `buffer: ["第一行", "第二行"]` |
+| 结束多行 | `finishMultiline()` | 返回 `"第一行\n第二行"`，`active: false, buffer: []` |
+| 空内容取消 | `startMultiline()` → `finishMultiline()`（buffer 为空） | 返回 `null` 表示取消 |
+| 结束但无内容（仅换行） | `pushLine("")` → `finishMultiline()` | 返回 `"\n"`（至少含一个空行） |
+
+#### 1.1.4 config 验证
+
+| 测试用例 | 输入 | 期望输出 |
+|----------|------|----------|
+| CLI 默认值 | 无参数 | `serverUrl: "http://localhost:4096"`, `directory: process.cwd()` |
+| 自定义 URL | `--url http://localhost:8080` | `serverUrl: "http://localhost:8080"` |
+| 自定义目录 | `--dir /path/to/project` | `directory: "/path/to/project"` |
+| --thinking 标志 | `--thinking` | `thinking: true` |
+| --new 标志 | `--new` | `newSession: true` |
+| --session 指定 | `--session ses_abc` | `initSession: "ses_abc"` |
+| 无 --session 且非 --new | `initSession` 为空字符串 | 进入 connecting 时走自动发现逻辑 |
+
+---
+
+### 1.2 format.ts — 输出格式化
+
+**测试目标**：验证所有终端输出格式化函数的输入 → 输出一致性。由于 picocolors 输出 ANSI 转义序列，测试应验证关键内容子串存在（不对 ANSI 码做精确匹配）。
+
+#### 1.2.1 AI 回复渲染
+
+| 测试用例 | 输入 | 期望输出包含 |
+|----------|------|--------------|
+| 消息头部 | `formatAIHeader("assistant", "opencode", "claude-sonnet-4")` | `"AI"`, `"opencode"`, `"claude-sonnet-4"` |
+| 消息头 agent 缺失 | `formatAIHeader("assistant", undefined, "claude-sonnet-4")` | 不打印 `"undefined"`，也不崩溃 |
+| 消息头 modelID 缺失 | `formatAIHeader("assistant", "opencode", undefined)` | 不打印 `"undefined"`，也不崩溃 |
+| 文本增量 | `formatTextDelta("你好世界")` | `"你好世界"` |
+| 空文本增量 | `formatTextDelta("")` | 空字符串 |
+| 多行文本增量（含换行） | `formatTextDelta("第一行\n第二行")` | `"第一行"`, `"第二行"` |
+
+#### 1.2.2 工具调用渲染
+
+| 测试用例 | 输入 | 期望输出包含 |
+|----------|------|--------------|
+| running 状态 | `formatToolCall("bash", "npm install", "running")` | `"bash"`, `"npm install"`（cyan 色） |
+| completed 状态 | `formatToolCall("read", "src/index.ts", "completed")` | `"read"`, `"src/index.ts"`, `"✓"`（green） |
+| completed 带 output | `formatToolCall("grep", "search 'foo'", "completed","match found")` | `"match found"`（dim） |
+| error 状态 | `formatToolCall("write", "config.json", "error", "EACCES")` | `"write"`, `"config.json"`, `"✗"`, `"EACCES"`（red） |
+| undefined state（畸形事件） | `formatToolCall("bash", "cmd", undefined)` | 不抛出异常，输出不崩溃 |
+
+#### 1.2.3 thinking / reasoning 渲染
+
+| 测试用例 | 输入 | 期望输出包含 |
+|----------|------|--------------|
+| thinking 启用时 | `formatReasoning("我需要先读取文件...")` | `"我需要先读取文件..."`（dim italic） |
+| thinking 禁用时 | `formatReasoning("...")` 在 `thinking: false` 环境 | 空字符串 |
+
+#### 1.2.4 提示符 & 分隔线
+
+| 测试用例 | 输入 | 期望输出包含 |
+|----------|------|--------------|
+| idle 提示符 | `formatPrompt("idle")` | `">"`（green） |
+| 权限提示符 | `formatPermissionPrompt("bash(rm -rf dist/)")` | `"⚠"`, `"bash(rm -rf dist/)"`, `"[y=本次 / n=拒绝 / a=始终允许]"` |
+| 分隔线 | `formatSeparator("最近 10 条消息")` | `"────"`, `"最近 10 条消息"` |
+
+#### 1.2.5 /history 渲染
+
+| 测试用例 | 输入 | 期望输出包含 |
+|----------|------|--------------|
+| 空历史 | `formatHistory([], 10)` | `"最近 0 条消息"` 或 `"无历史"` |
+| 单条 user 消息 | `formatHistory([{role:"user", text:"hello"}])` | `"You:"`, `"hello"` |
+| 单条 assistant 消息 | `formatHistory([{role:"assistant", text:"hi"}])` | `"AI:"`, `"hi"` |
+| 混合消息 | user + assistant 两条 | `"You:"`, `"hello"`, `"AI:"`, `"hi"`，顺序正确 |
+| 截断 | `formatHistory(messages(20条), 5)` | 仅显示最新 5 条 |
+| 长消息截断 | 130 字符的消息 | 显示前 117 字符 + `"..."`，内部换行保留 |
+
+#### 1.2.6 /sessions 渲染
+
+| 测试用例 | 输入 | 期望输出包含 |
+|----------|------|--------------|
+| 空列表 | `formatSessions([])` | `"无 session"` 或类似提示 |
+| 单条 | `formatSessions([{id:"ses_1",title:"测试",updated:"11:18"}])` | `"ses_1"`, `"测试"`, `"11:18"` |
+| 多条 | 3 条 session | 3 行数据，表头 `"Session ID"`, `"Title"`, `"Updated"` |
+| ID 截断 | 长 ID `ses_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx` | 显示前 17 字符 + `...` |
+| 标题截断 | `formatSessions([{id:"ses_1", title:"此会话标题非常非常长超过二十五个中文字符", updated:"11:18"}])` | 标题显示前 22 字符 + `...`，表格对齐不破坏 |
+
+#### 1.2.7 /info 渲染
+
+| 测试用例 | 输入 | 期望输出包含 |
+|----------|------|--------------|
+| 完整信息 | `formatInfo({id:"ses_1", title:"测试", directory:"/a", model:"openai/gpt-4o", files:["a.ts"]})` | `"Title"`, `"测试"`, `"ID"`, `"ses_1"`, `"Directory"`, `"/a"`, `"Model"`, `"openai/gpt-4o"`, `"Files"`, `"1"` |
+| 无 model | model 为空 | 不显示 `"Model"` 行或显示 `"默认"` |
+| 无附件 | files 为空 | `"Files"` 行显示 `"0"` |
+
+#### 1.2.8 /files 渲染
+
+| 测试用例 | 输入 | 期望输出包含 |
+|----------|------|--------------|
+| 空附件 | `formatFiles([])` | `"无附件"` |
+| 单附件 | `formatFiles(["src/index.ts"])` | `"1. src/index.ts"` |
+| 多附件 | `formatFiles(["a.ts", "b.ts", "c.ts"])` | `"1. a.ts"`, `"2. b.ts"`, `"3. c.ts"` |
+
+#### 1.2.9 连接状态消息
+
+| 测试用例 | 输入 | 期望输出包含 |
+|----------|------|--------------|
+| 连接中 | `formatConnecting("http://localhost:4096")` | `"正在连接"`, `"http://localhost:4096"` |
+| 连接成功 | `formatConnected("ses_xxx", "调研 OpenCode")` | `"已连接"`, `"ses_xxx"`, `"调研 OpenCode"` |
+| 连接失败 | `formatConnectionError("ECONNREFUSED")` | `"无法连接"`, `"ECONNREFUSED"` |
+| Session 不存在 | `formatSessionNotFound("ses_404")` | `"ses_404"`, `"不存在"` |
+| 创建 session 失败 | `formatSessionCreateError("权限不足")` | `"无法创建"`, `"权限不足"` |
+
+---
+
+### 1.3 slash.ts — 命令路由
+
+**测试目标**：验证本地命令识别、参数解析、未识别命令的透传标记。
+
+#### 1.3.1 本地命令识别
+
+| 测试用例 | 输入 | 期望结果 |
+|----------|------|----------|
+| `/quit` | `"/quit"` | `{ local: true, command: "quit", args: "" }` |
+| `/exit` | `"/exit"` | `{ local: true, command: "exit", args: "" }` |
+| `/switch ses_abc` | `"/switch ses_abc"` | `{ local: true, command: "switch", args: "ses_abc" }` |
+| `/switch` 无参 | `"/switch"` | `{ local: true, command: "switch", args: "" }` |
+| `/new 新标题` | `"/new 新标题"` | `{ local: true, command: "new", args: "新标题" }` |
+| `/new` 无参 | `"/new"` | `{ local: true, command: "new", args: "" }` |
+| `/fork msg_001` | `"/fork msg_001"` | `{ local: true, command: "fork", args: "msg_001" }` |
+| `/fork` 无参 | `"/fork"` | `{ local: true, command: "fork", args: "" }` |
+| `/history 20` | `"/history 20"` | `{ local: true, command: "history", args: "20" }` |
+| `/history` 无参 | `"/history"` | `{ local: true, command: "history", args: "" }` |
+| `/file src/index.ts` | `"/file src/index.ts"` | `{ local: true, command: "file", args: "src/index.ts" }` |
+| `/files` | `"/files"` | `{ local: true, command: "files", args: "" }` |
+| `/clear-files` | `"/clear-files"` | `{ local: true, command: "clear-files", args: "" }` |
+| `/model openai/gpt-4o` | `"/model openai/gpt-4o"` | `{ local: true, command: "model", args: "openai/gpt-4o" }` |
+| `/model` | `"/model"` | `{ local: true, command: "model", args: "" }` |
+| `/info` | `"/info"` | `{ local: true, command: "info", args: "" }` |
+| `/sessions 5` | `"/sessions 5"` | `{ local: true, command: "sessions", args: "5" }` |
+| `/sessions` | `"/sessions"` | `{ local: true, command: "sessions", args: "" }` |
+
+#### 1.3.2 透传命令识别
+
+| 测试用例 | 输入 | 期望结果 |
+|----------|------|----------|
+| `/review` | `"/review"` | `{ local: false, command: "review", arguments: "" }` |
+| `/test` | `"/test"` | `{ local: false, command: "test", arguments: "" }` |
+| `/lint` | `"/lint"` | `{ local: false, command: "lint", arguments: "" }` |
+| `/compact` | `"/compact"` | `{ local: false, command: "compact", arguments: "" }` |
+| `/release minor` | `"/release minor"` | `{ local: false, command: "release", arguments: "minor" }` |
+| `/deploy staging` | `"/deploy staging"` | `{ local: false, command: "deploy", arguments: "staging" }` |
+| `/任意未知命令` | `"/foobar baz"` | `{ local: false, command: "foobar", arguments: "baz" }` |
+
+#### 1.3.3 非斜杠输入
+
+| 测试用例 | 输入 | 期望结果 |
+|----------|------|----------|
+| 纯文本 | `"你好"` | `null`（表示非命令，需作为 prompt 发送） |
+| 空字符串 | `""` | `null` |
+| 空格开头 | `"  帮助"` | `null` |
+| 以 `/` 开头但仅 `/` | `"/"` | `{ local: false, command: "", arguments: "" }` 或 `null` |
+| 带空格的参数 | `"/file path/with spaces/file.ts"` | `{ local: true, command: "file", args: "path/with spaces/file.ts" }` |
+
+#### 1.3.4 边界情况
+
+| 测试用例 | 输入 | 期望结果 |
+|----------|------|----------|
+| `/switch` 参数含多余空格 | `"/switch   ses_abc  "` | 正确提取 `args: "ses_abc"` |
+| 命令大小写 | `"/QUIT"` | 大小写不敏感，识别为 quit |
+| 透传命令大小写 | `"/REVIEW"` | `{ local: false, command: "review", arguments: "" }` |
+| 透传命令大小写 | `"/COMPACT"` | `{ local: false, command: "compact", arguments: "" }` |
+| 空参数命令 | `"/history   "` | `{ local: true, command: "history", args: "" }` |
+| 命令带前导空格 | `"  /quit"` | `null`（非斜杠开头） |
+
+---
+
+### 1.4 prompt.ts — SSE 事件循环
+
+**测试目标**：验证事件分派逻辑、状态转换、权限自动审批、错误处理。
+
+#### 1.4.1 事件分派
+
+| 测试用例 | 输入事件 | 期望行为 |
+|----------|----------|----------|
+| `message.updated` 首次 | `{ role: "assistant", agent: "opencode", modelID: "claude-sonnet-4" }` | 调用 `formatAIHeader` 输出头部 |
+| `message.updated` 重复 | 同角色再次收到 | 不重复打印头部 |
+| `text` part | `{ type: "text", text: "你好" }` | `process.stdout.write("你好")` |
+| `tool` running | `{ type: "tool", state: "running", tool: "bash", title: "npm install" }` | 调用 `formatToolCall("bash", "npm install", "running")` |
+| `tool` completed | `{ type: "tool", state: "completed", ... }` | 调用 `formatToolCall(..., "completed")` |
+| `tool` error | `{ type: "tool", state: "error", error: "permission denied" }` | 调用 `formatToolCall(..., "error", "permission denied")` |
+| `reasoning` (thinking=true) | `{ type: "reasoning", text: "分析中..." }` | 调用 `formatReasoning` |
+| `reasoning` (thinking=false) | `{ type: "reasoning", text: "分析中..." }` | 静默忽略 |
+| `step-start` | `{ type: "step-start" }` | 静默忽略 |
+| `step-finish` | `{ type: "step-finish" }` | 静默忽略 |
+| `session.error` | `{ error: "超出速率限制" }` | 打印红色错误，继续循环 |
+| `session.status` idle | `{ type: "idle" }` | 退出事件循环 → idle 状态 |
+| `question.asked` | `{ type:"question.asked", id:"q1", question:"如何继续?" }` | 暂停流，展示问题，等待用户文本输入后回复 |
+| `tool` completed 先于 running | 同一 toolID 先收到 completed 再 running | 不崩溃，completed 正常渲染，running 随后更新 |
+| 未知事件类型 | `{ type: "unknown_xxx" }` | 静默忽略 |
+| SSE 事件无 type 字段 | `{ }` | 静默忽略，不抛出异常 |
+
+#### 1.4.2 权限处理（prompt.ts 内部逻辑）
+
+| 测试用例 | 输入场景 | 期望行为 |
+|----------|----------|----------|
+| 权限自动通过 | `permission.asked` 的 pattern 在 `session.approved` 中 | 自动调用 `reply("always")`，不进入 await_perm |
+| 权限需要确认 | `permission.asked` 的 pattern 不在 approved 中 | 暂停流，进入 await_perm 状态 |
+| 空 patterns 数组 | `permission.asked { patterns: [] }` | 进入 await_perm（安全降级），不崩溃 |
+| 权限包含多 pattern | `patterns: ["rm -rf dist/", "mv * /tmp/"]` 其中一个在 approved | 应全部不在 approved 才触发确认（取决于实现策略） |
+
+#### 1.4.3 question.asked 处理
+
+| 测试用例 | 输入场景 | 期望行为 |
+|----------|----------|----------|
+| AI 提问 | `question.asked { id: "q1", question: "使用哪个端口?" }` | 暂停流，展示问题，接受用户输入后 `POST /question/q1/reply` |
+| 用户回复空字符串 | 对 question 回复 `""` | 允许发送空回复（取决于需求，或要求非空） |
+
+#### 1.4.4 abort 处理
+
+| 测试用例 | 输入 | 期望行为 |
+|----------|------|----------|
+| streaming 中 abort | 接收 Ctrl+C 信号 | 调用 `POST /session/:id/abort`，打印 `"已中断"`，→ idle |
+| await_perm 中 abort | 接收 Ctrl+C 信号 | 调用 `POST /session/:id/abort`，打印 `"已中断"`，→ idle |
+| abort 请求失败 | abort API 返回错误 | 仍然 → idle，打印警告 |
+
+---
+
+### 1.5 client.ts — SDK 工厂
+
+**测试目标**：验证 SDK 客户端创建和 API 调用封装。
+
+#### 1.5.1 客户端创建
+
+| 测试用例 | 输入 | 期望行为 |
+|----------|------|----------|
+| 正常创建 | `createOpencodeClient({ baseUrl: "http://localhost:4096", directory: "/tmp" })` | 返回客户端实例，非 null |
+| 无效 URL | `createOpencodeClient({ baseUrl: "not-a-url", directory: "/tmp" })` | 抛出或返回错误 |
+| 空 directory | `createOpencodeClient({ baseUrl: "...", directory: "" })` | 使用默认值或抛出 |
+
+#### 1.5.2 API 方法映射
+
+| 测试用例 | 调用 | 期望 HTTP |
+|----------|------|-----------|
+| `listSessions({ directory, limit: 5 })` | `client.listSessions(...)` | `GET /session?directory=&limit=5` |
+| `getSession("ses_1")` | `client.getSession(...)` | `GET /session/ses_1` |
+| `createSession({ title: "新" })` | `client.createSession(...)` | `POST /session` body `{ title: "新" }` |
+| `sendMessage(sid, { parts, model })` | `client.sendMessage(...)` | `POST /session/ses_1/message` |
+| `sendCommand(sid, "review")` | `client.sendCommand(...)` | `POST /session/ses_1/command` body `{command:"review"}` |
+| `replyPermission("req1", "once")` | `client.replyPermission(...)` | `POST /permission/req1/reply` body `{reply:"once"}` |
+| `replyPermission("req1", "always")` | `client.replyPermission(...)` | `POST /permission/req1/reply` body `{reply:"always"}` |
+| `replyPermission("req1", "reject")` | `client.replyPermission(...)` | `POST /permission/req1/reply` body `{reply:"reject"}` |
+| `abortSession("ses_1")` | `client.abortSession(...)` | `POST /session/ses_1/abort` |
+| `forkSession("ses_1", "msg_1")` | `client.forkSession(...)` | `POST /session/ses_1/fork` body `{messageID:"msg_1"}` |
+| `getMessages("ses_1", 10)` | `client.getMessages(...)` | `GET /session/ses_1/message?limit=10` |
+| `replyQuestion("q1", { answer: "8080" })` | `client.replyQuestion(...)` | `POST /question/q1/reply` body `{answer:"8080"}` |
+| `subscribe()` | `client.subscribe()` | 返回 AsyncGenerator，可迭代消费 SSE 事件 |
+
+#### 1.5.3 错误传播
+
+| 测试用例 | 模拟场景 | 期望行为 |
+|----------|----------|----------|
+| 网络错误 | fetch 返回 `ECONNREFUSED` | 将错误传播给调用方，不静默吞掉 |
+| HTTP 4xx | 服务端返回 404 | 将错误传播，包含状态码 |
+| HTTP 5xx | 服务端返回 500 | 将错误传播，包含状态码 |
+
+---
+
+## Part 2: 集成测试
+
+集成测试使用 **mock SDK 客户端**，所有 HTTP 调用替换为可控的 mock 实现，专注验证模块间交互逻辑和状态转换。
+
+### 2.1 测试基础设施
+
+```typescript
+// 测试中使用的最小 mock
+interface MockSDK {
+  event: {
+    subscribe:    () => AsyncGenerator<SSEEvent>
+  }
+  session: {
+    prompt:     (sid: string, body: any) => Promise<any>
+    command:    (sid: string, body: any) => Promise<any>
+    get:        (sid: string) => Promise<any>
+    list:       (params: any) => Promise<any>
+    create:     (body: any) => Promise<any>
+    fork:       (sid: string, body: any) => Promise<any>
+    messages:   (sid: string, limit: number) => Promise<any>
+    abort:      (sid: string) => Promise<any>
+  }
+  permission: {
+    reply:      (rid: string, body: any) => Promise<any>
+  }
+  question: {
+    reply:      (qid: string, body: any) => Promise<any>
+  }
+}
+```
+
+!!! Tip mock 粒度
+    mock SDK 不模拟网络层细节。每个 SDK 方法直接返回可控值（同步或异步），让测试专注于 repl.ts 主循环的状态转换和事件消费逻辑。
+
+### 2.2 场景矩阵
+
+:::mermaid
+flowchart LR
+  subgraph 正常流程
+    S1[场景1: 完整 REPL 周期]
+    S2[场景2: Permission 审批]
+    S3[场景3: 自动审批]
+  end
+  subgraph 异常流程
+    S4[场景4: SSE 断开-streaming]
+    S5[场景5: SSE 断开-perm]
+    S11[场景11: 无法连接]
+    S12[场景12: session 不存在]
+  end
+  subgraph Session管理
+    S6[场景6: /switch 切换]
+    S7[场景7: /fork 派生]
+  end
+  subgraph 本地功能
+    S8[场景8: 多行输入]
+    S9[场景9: /history]
+    S10[场景10: 透传命令]
+  end
+  subgraph 中断
+    S13[场景13: Ctrl+C 处理]
+  end
+:::
+
+---
+
+### 场景 1: 完整 REPL 周期（idle → streaming → idle）
+
+**前置条件**：config 已初始化，session 已存在（id=`ses_001`），mock SDK 就绪。
+
+| 步骤 | 操作 | mock 行为 | 期望结果 |
+|------|------|-----------|----------|
+| 1 | REPL 启动，进入 idle | — | 提示符 `> ` 显示 |
+| 2 | 输入 `"帮我重构此代码"` 回车 | `sendMessage` 返回 `{ ok: true, stream: generator }`；generator 依次 yield 多个 SSE 事件 | 进入 streaming 状态 |
+| 3 | 流式事件 `message.updated` | yield `{ type:"message.updated", role:"assistant", agent:"opencode", modelID:"claude-sonnet-4" }` | 终端打印 `AI · opencode · claude-sonnet-4` |
+| 4 | 流式事件 `text` | yield `{ type:"message.part.updated", part:{ type:"text", text:"好的，我来分析..." } }` | 终端增量打印文本 |
+| 5 | 流式事件 `tool running` | yield `{ type:"message.part.updated", part:{ type:"tool", state:"running", tool:"bash", title:"npm install" } }` | 打印 `⚙ bash · npm install` (cyan) |
+| 6 | 流式事件 `tool completed` | yield `{ type:"message.part.updated", part:{ type:"tool", state:"completed", tool:"bash", title:"npm install", output:"done" } }` | 打印 `⚙ bash · npm install ✓` (green) + dim 输出 |
+| 7 | 流式事件 `session.status idle` | yield `{ type:"session.status", status:"idle" }` | 退出 streaming，显示提示符 `> ` |
+| 8 | 状态重回 idle | — | 可以接受下一个 prompt 输入 |
+
+**验证点**：
+- 提示符在 streaming 期间不显示
+- 事件顺序正确处理（header → text → tool → idle）
+- 中间状态不包括 idle 提示符闪现
+
+---
+
+### 场景 2: 权限审批流程（streaming → await_perm → streaming → idle）
+
+**前置条件**：session.approved 为空。
+
+| 步骤 | 操作 | mock 行为 | 期望结果 |
+|------|------|-----------|----------|
+| 1 | idle 发送 prompt | mock 返回流生成器 | 进入 streaming |
+| 2 | 收到 `permission.asked` | yield `{ type:"permission.asked", id:"req_1", permission:"bash", patterns:["rm -rf dist/"] }` | 打印 `⚠ 请求授权: bash(rm -rf dist/)` + 提示符 `⚠ 批准？ [y=本次 / n=拒绝 / a=始终允许] >` |
+| 3 | 用户输入 `y` | `replyPermission("req_1", { reply:"once" })` 返回 ok | 退出 await_perm，恢复 streaming |
+| 4 | 后续文本继续 | yield 更多 text 事件 | 正常输出 |
+| 5 | 最终 idle | yield `session.status.idle` | 回到 idle |
+
+**验证点**：
+- await_perm 期间后续流事件被阻塞（暂停消费）
+- 用户回复后流恢复
+- `reply: "once"` 正确发送
+- session.approved 不变（once 不加入 pattern）
+
+---
+
+### 场景 3: 自动审批（pattern 已在 approved 中）
+
+**前置条件**：`session.approved = new Set(["rm -rf dist/"])`。
+
+| 步骤 | 操作 | mock 行为 | 期望结果 |
+|------|------|-----------|----------|
+| 1 | idle 发送 prompt | mock 返回流生成器 | 进入 streaming |
+| 2 | 收到 `permission.asked` pattern 在 approved | yield `{ type:"permission.asked", id:"req_2", permission:"bash", patterns:["rm -rf dist/"] }` | 自动调用 `replyPermission("req_2", { reply:"always" })` |
+| 3 | 不暂停流 | — | 不进入 await_perm，流式输出继续 |
+| 4 | 最终 idle | yield `session.status.idle` | 回到 idle |
+
+**验证点**：
+- 无任何 await_perm 提示符出现
+- `reply: "always"` 正确发送
+- 流式输出不中断
+
+---
+
+### 场景 4: SSE 连接在 streaming 中断开
+
+**前置条件**：正在 streaming 中。
+
+| 步骤 | 操作 | mock 行为 | 期望结果 |
+|------|------|-----------|----------|
+| 1 | streaming 进行中 | 流式事件正常 yield | 文本在输出 |
+| 2 | 连接断开 | generator throw `SSEError("connection lost")` | 打印 `⚠ 连接中断` |
+| 3 | 状态恢复 | — | 回到 idle 状态，显示提示符 `> ` |
+
+**验证点**：
+- 错误信息明确提示连接中断
+- 不崩溃，不退进程
+- 用户可以立即发送新 prompt 续接
+
+---
+
+### 场景 5: SSE 连接在 await_perm 中断开
+
+**前置条件**：正在 await_perm 中（用户尚未回复）。
+
+| 步骤 | 操作 | mock 行为 | 期望结果 |
+|------|------|-----------|----------|
+| 1 | 收到 permission.asked | — | 进入 await_perm，等待用户输入 |
+| 2 | 连接断开 | 底层 SSE 连接断开 | 打印 `⚠ 连接中断，权限请求可能已被拒绝` |
+| 3 | 状态恢复 | — | 回到 idle 状态 |
+
+**验证点**：
+- 明确提示"权限请求可能已被拒绝"
+- 不崩溃
+- 用户可以立即发送新 prompt
+
+---
+
+### 场景 6: Session 切换（/switch）
+
+**前置条件**：当前 session=`ses_001`，存在另一个 session=`ses_002`。
+
+| 步骤 | 操作 | mock 行为 | 期望结果 |
+|------|------|-----------|----------|
+| 1 | idle 中输入 `/switch ses_002` | — | 本地命令被识别 |
+| 2 | 切换 session | — | `session.id` 变为 `ses_002` |
+| 3 | approved 清空 | — | `session.approved.size` 为 `0` |
+| 4 | 显示确认信息 | — | 打印切换后的 session 标题和 ID |
+| 5 | 回到 idle | — | 提示符 `> ` |
+
+**验证点**：
+- session.id 更新
+- session.approved 清空（避免旧 session 的权限自动审批泄露到新 session）
+- session.files 保持或清空（根据 spec `/switch` 不涉及 files，应为保持）
+
+---
+
+### 场景 7: Session fork（/fork）
+
+**前置条件**：当前 session=`ses_001`，指定 fork 点 message=`msg_005`。
+
+| 步骤 | 操作 | mock 行为 | 期望结果 |
+|------|------|-----------|----------|
+| 1 | idle 中输入 `/fork msg_005` | — | 本地命令被识别 |
+| 2 | 调用 fork API | `forkSession("ses_001", { messageID:"msg_005" })` 返回 `{ id:"ses_fork_001", title:"fork 自..." }` | session 更新为派生后的 session |
+| 3 | approved 清空 | — | `session.approved.size` 为 `0` |
+| 4 | 回到 idle | — | 提示符 `> `，打印派生确认信息 |
+
+**验证点**：
+- fork API 正确调用，携带 messageID
+- 新的 session.id / title 更新
+- approved 清空
+
+---
+
+### 场景 8: 多行输入收集
+
+**前置条件**：idle 状态。
+
+| 步骤 | 操作 | 期望结果 |
+|------|------|----------|
+| 1 | 输入 `\` 回车 | 提示符变为 `>`（多行模式），无前缀 |
+| 2 | 输入 `第一行代码` 回车 | buffer 包含 `"第一行代码"` |
+| 3 | 输入 `第二行代码` 回车 | buffer 包含两行 |
+| 4 | 输入 `.` 回车 | 多行模式结束，合并为 `"第一行代码\n第二行代码"`，作为 prompt 发送 |
+| 5 | 进入 streaming | 开始事件循环 |
+
+**额外验证**：
+- 输入 `\` 后直接输入 `.`（buffer 为空）→ 取消多行，回到 idle
+- 中间输入空行 → 保留空行在 buffer 中
+
+---
+
+### 场景 9: /history 命令
+
+**前置条件**：idle 状态，session 中有 5 条消息。
+
+| 步骤 | 操作 | mock 行为 | 期望结果 |
+|------|------|-----------|----------|
+| 1 | 输入 `/history` | `getMessages("ses_001", 10)` 返回 5 条 | 打印 5 条消息（默认 limit=10），用户消息标记 `You:`，AI 消息标记 `AI:` |
+| 2 | 输入 `/history 2` | `getMessages("ses_001", 2)` 返回最近 2 条 | 仅显示 2 条 |
+| 3 | session 无消息 | `getMessages` 返回 `[]` | 打印 `"无历史"` |
+| 4 | API 调用失败 | `getMessages` reject | 打印错误，保持 idle |
+
+**验证点**：
+- 默认 limit=10
+- 参数正确解析并传入 API
+- 错误不导致崩溃
+
+---
+
+### 场景 10: 透传命令（/review、/compact 等）
+
+**前置条件**：idle 状态。
+
+| 步骤 | 操作 | mock 行为 | 期望结果 |
+|------|------|-----------|----------|
+| 1 | 输入 `/review` | `sendCommand("ses_001", { command:"review" })` 返回 ok + stream | 进入 streaming，等待 AI 回复 |
+| 2 | 输入 `/compact` | `sendCommand("ses_001", { command:"compact" })` 返回 ok + stream | 进入 streaming |
+| 3 | 输入 `/release minor` | `sendCommand("ses_001", { command:"release", arguments:"minor" })` | 进入 streaming，arguments 正确传递 |
+| 4 | 透传命令失败 | `sendCommand` reject (404) | 打印错误，保持 idle |
+
+**验证点**：
+- 未匹配本地命令的 `/xxx` 正确走 `sendCommand`
+- 参数（空格后的部分）作为 `arguments` 传递
+- streaming 行为与普通 prompt 一致
+- 错误时回到 idle
+
+---
+
+### 场景 11: 启动时无法连接 serve
+
+**前置条件**：opencode serve 未运行（端口无监听）。
+
+| 步骤 | 操作 | mock 行为 | 期望结果 |
+|------|------|-----------|----------|
+| 1 | 启动 REPL | `listSessions` 或 `getSession` 调用 reject `ECONNREFUSED` | 打印 `无法连接 http://localhost:4096` |
+| 2 | 退出 | — | `process.exit(1)` |
+
+**验证点**：
+- 错误信息清晰，包含 serve 地址
+- 退出码非 0
+
+---
+
+### 场景 12: 启动时 session 不存在
+
+**前置条件**：`--session ses_nonexistent`，serve 运行但无此 session。
+
+| 步骤 | 操作 | mock 行为 | 期望结果 |
+|------|------|-----------|----------|
+| 1 | 启动 REPL `--session ses_nonexistent` | `getSession("ses_nonexistent")` 返回 404 | 打印 `session ses_nonexistent 不存在` |
+| 2 | 退出 | — | `process.exit(1)` |
+
+**验证点**：
+- 明确提示指定 session 不存在
+- 退出码非 0
+
+---
+
+### 场景 13: Ctrl+C 各状态处理
+
+| 前置状态 | Ctrl+C 操作 | mock 行为 | 期望新状态 | 期望输出 |
+|----------|-------------|-----------|------------|----------|
+| idle | 按一次 Ctrl+C | — | exiting | 打印退出信息，`process.exit(0)` |
+| streaming | 按一次 Ctrl+C | `abortSession("ses_001")` ok | idle | 打印 `"已中断"`，提示符 `> ` |
+| streaming | 按两次 Ctrl+C | 第一次 abort | exiting | 第二次直接退出 |
+| await_perm | 按一次 Ctrl+C | `abortSession("ses_001")` ok | idle | 打印 `"已中断"`，提示符 `> ` |
+| session_pick | 按 Ctrl+C | — | idle | 取消选择，回到 idle |
+
+---
+
+## Part 3: 人工验收清单
+
+以下清单针对真实 `opencode serve` 实例进行人工验收。启动 serve 后，通过 `opencode-repl` 逐项测试。
+
+### 3.1 启动 & 连接
+
+- [ ] **S-01** 启动 `opencode-repl`（无参数），验证显示版本信息和 `正在连接 http://localhost:4096 ...`，随后显示 `已连接 · session: <标题> (ses_xxx)`，最后出现 `> ` 提示符
+- [ ] **S-02** 使用 `--url http://localhost:4096` 指定自定义地址，验证能连接
+- [ ] **S-03** 使用 `--dir /other/project` 指定不同项目目录，连接后 `/info` 显示 Directory 为指定目录
+- [ ] **S-04** 使用 `--session <已知ID>` 指定已有 session，验证连接后 `/info` 显示该 session 信息
+- [ ] **S-05** 使用 `--new` 创建新 session，验证 `/info` 显示新建的 session（非最新已有）
+- [ ] **S-06** 使用 `--thinking` 启动，验证遇到 reasoning 事件时终端显示思考内容
+- [ ] **S-07** 启动时 `opencode serve` 未运行，验证打印 `无法连接` 并退出（退出码非 0）
+- [ ] **S-08** 启动时 `--session` 指定不存在的 ID，验证打印 `session xxx 不存在` 并退出
+
+### 3.2 Session 管理
+
+- [ ] **M-01** 输入 `/switch`（无参），验证弹出 session 选择器，上下箭头可选，回车确认后切换到所选 session
+- [ ] **M-02** 输入 `/switch <ID>`，验证直接切换到指定 session，打印切换确认信息
+- [ ] **M-03** 切换 session 后，验证之前 session 的 `session.approved` 权限模式不会在新 session 中生效（发送同样需要权限的 prompt，确认再次弹出审批）
+- [ ] **M-04** 输入 `/new 新项目探索`，验证创建新 session 并切换，附件列表被清空
+- [ ] **M-05** 输入 `/new`（无参），验证以默认标题创建新 session
+- [ ] **M-06** 输入 `/fork <messageID>`，验证 fork 成功，新 session 从指定消息点开始
+- [ ] **M-07** 输入 `/fork`（无参），验证先弹出 session 选择器再 fork
+- [ ] **M-08** 输入 `/sessions`，验证显示当前目录下的 session 列表表格（Session ID、Title、Updated）
+- [ ] **M-09** 输入 `/sessions 3`，验证仅显示最近 3 条
+- [ ] **M-10** 输入 `/info`，验证打印当前 session 的完整信息：标题、ID、目录、模型、附件数
+
+### 3.3 Prompt & 回复
+
+- [ ] **P-01** 输入普通文本 `"你好，介绍一下自己"`，验证：进入 streaming → 打印 AI 头部（`AI · agent · model`）→ 流式输出正文 → 完成后回到 `> `
+- [ ] **P-02** streaming 过程中验证：提示符 `> ` 消失，终端仅显示流式内容
+- [ ] **P-03** 发送需要执行 shell 命令的 prompt（如 `"列出当前目录文件"`），验证看到 tool call 输出（`⚙ bash · ...` 运行中 → `✓` 完成 + 缩进输出）
+- [ ] **P-04** 验证 tool call 从 running → completed 的状态变化在终端中正确渲染（颜色变化）
+- [ ] **P-05** 验证 tool call error 状态（如操作被拒绝），显示 `✗` + 红色错误信息
+- [ ] **P-06** 使用 `--thinking` 启动后，验证 reasoning 内容以 dim 斜体显示
+- [ ] **P-07** 输入 `\` 进入多行模式，输入多行后以 `.` 结束，验证合并发送
+- [ ] **P-08** 多行模式中输入 `\` 后直接 `.`，验证取消多行回到 idle
+- [ ] **P-09** 输入空行（仅回车），验证忽略并重新显示提示符
+
+### 3.4 Tool Call 显示
+
+- [ ] **T-01** 验证 tool call running 时显示格式：`  ⚙ <tool_name> · <title>`（cyan 色）
+- [ ] **T-02** 验证 tool call completed 显示格式：`  ⚙ <tool_name> · <title> ✓`（green）+ 缩进的 dim output
+- [ ] **T-03** 验证 tool call error 显示格式：`  ✗ <tool_name> · <title> ✗`（red）+ 缩进的 error 信息
+- [ ] **T-04** 验证 tool output 较长时的显示（不截断关键信息）
+- [ ] **T-05** 验证同一 prompt 中多个 tool call 依次执行时，各自状态独立显示
+
+### 3.5 权限审批
+
+- [ ] **A-01** 发送需要写文件操作的 prompt（如 `"修改 src/index.ts"`），验证收到 `⚠ 请求授权: file_write(...)` 和审批提示符
+- [ ] **A-02** 在审批提示下输入 `y`，验证本次操作获批，继续 streaming
+- [ ] **A-03** 在审批提示下输入 `n`，验证操作被拒绝，继续 streaming
+- [ ] **A-04** 在审批提示下输入 `a`，验证操作始终允许，后续同 pattern 操作不再询问
+- [ ] **A-05** 审批通过 `a` 后，发送同一操作再次触发，验证自动通过（无审批提示）
+- [ ] **A-06** 审批时输入无效字符（如 `x`），验证提示重新输入（`y/n/a`）
+- [ ] **A-07** 审批期间按 Ctrl+C，验证 abort → 打印 `"已中断"` → 回到 idle
+- [ ] **A-08** 同 session 中 `a` 批准的 pattern，切换 session 后失效（新 session 需要重新审批）
+
+### 3.6 历史 & 浏览
+
+- [ ] **H-01** 输入 `/history`，验证显示最近 10 条消息，`You:` 和 `AI:` 格式正确
+- [ ] **H-02** 输入 `/history 3`，验证仅显示最近 3 条
+- [ ] **H-03** 新 session 无消息时输入 `/history`，验证显示 `"无历史"` 或类似提示
+- [ ] **H-04** 历史内容包含多行时，验证完整显示（不截断内部换行）
+
+### 3.7 文件附件
+
+- [ ] **F-01** 输入 `/file src/index.ts`，验证 `/files` 显示该文件在附件列表中
+- [ ] **F-02** 输入 `/file src/index.ts` 两次，验证 `/files` 仅显示一次（去重）
+- [ ] **F-03** 输入 `/files`，验证列出当前所有附件（带序号）
+- [ ] **F-04** 输入 `/clear-files`，验证 `/files` 显示 `"无附件"`
+
+### 3.8 错误恢复
+
+- [ ] **E-01** streaming 期间断掉 serve（`kill` serve 进程），验证打印 `⚠ 连接中断`，回到 `> ` 提示符
+- [ ] **E-02** 断连后重新启动 serve，输入新 prompt，验证正常连接和工作
+- [ ] **E-03** await_perm 期间断掉 serve，验证打印 `⚠ 连接中断，权限请求可能已被拒绝`，回到 idle
+- [ ] **E-04** streaming 期间按一次 Ctrl+C，验证 abort → `"已中断"` → idle，可继续输入
+- [ ] **E-05** idle 状态下按 Ctrl+C，验证正常退出程序（退出码 0）
+- [ ] **E-06** streaming 期间快速按两次 Ctrl+C，验证直接退出程序
+- [ ] **E-07** 输入 `/quit` 或 `/exit`，验证正常退出（退出码 0）
+- [ ] **E-08** 透传命令 `/review` 发送后 serve 返回错误（如 400），验证打印错误并保持 idle
+
+### 3.9 边界情况
+
+- [ ] **B-01** 发送非常长的 prompt（如粘贴 5000 字符），验证正确发送和接收
+- [ ] **B-02** 发送含特殊字符的 prompt（`\n`、`\t`、Unicode emoji 等），验证正确显示
+- [ ] **B-03** Session 标题包含特殊字符（中文、emoji），验证 `/sessions` 和 `/info` 正确显示
+- [ ] **B-04** 连续快速发送多个 prompt（上一个完成后立即输入下一个），验证无竞态、无卡死
+- [ ] **B-05** 终端窗口调整大小时，验证显示不混乱
+- [ ] **B-06** 管道输入（`echo "你好" | opencode-repl`），验证行为合理（拒绝或正常处理）
+- [ ] **B-07** 验证 `--help` / `-h` 输出帮助信息
+- [ ] **B-08** 验证 `--version` / `-v` 输出版本号
+
+---
+
+## 附录 A: 测试流程图
+
+### A.1 单元测试执行流程
+
+:::mermaid
+flowchart TD
+  START[开始] --> UT{"模块类型"}
+  UT -->|state.ts| S[数据模型测试]
+  UT -->|format.ts| F[格式化测试]
+  UT -->|slash.ts| SL[路由测试]
+  UT -->|prompt.ts| PR[事件循环测试]
+  UT -->|client.ts| CL[SDK 工厂测试]
+
+  S --> S1[结构创建验证]
+  S --> S2[修改不变量验证]
+  S --> S3[边缘情况]
+
+  F --> F1[输入→输出验证]
+  F --> F2[颜色/格式存在性]
+
+  SL --> SL1[本地命令匹配]
+  SL --> SL2[透传命令标记]
+  SL --> SL3[非命令输入]
+
+  PR --> PR1[事件分派]
+  PR --> PR2[权限自动审批]
+  PR --> PR3[错误处理]
+
+  CL --> CL1[创建验证]
+  CL --> CL2[API 映射]
+  CL --> CL3[错误传播]
+:::
+
+### A.2 集成测试数据流
+
+:::mermaid
+sequenceDiagram
+  participant RL as Repl 循环
+  participant SS as 状态机
+  participant MK as Mock SDK
+  participant FM as Format 模块
+
+  RL->>SS: 获取当前状态
+  SS-->>RL: idle
+  RL->>RL: readline 等待输入
+  RL->>SS: 发送 prompt → streaming
+  RL->>MK: sendMessage(sid, body)
+  MK-->>RL: stream generator
+  loop SSE 事件
+    RL->>MK: 消费事件
+    MK-->>RL: message.part.updated
+    RL->>FM: formatTextDelta(text)
+    FM-->>RL: 格式化字符串
+    RL->>RL: process.stdout.write
+  end
+  MK-->>RL: session.status.idle
+  RL->>SS: → idle
+:::
+
+---
+
+## 附录 B: 测试环境要求
+
+| 项目 | 要求 |
+|------|------|
+| 运行环境 | Bun 1.2+ |
+| 测试框架 | `bun:test`（内置 `describe`/`test`/`expect`） |
+| Mock 策略 | 手写 stub（不使用 `sinon` 等 mock 库），符合项目"避免 mock"原则 |
+| 快照测试 | 不要求。颜色 ANSI 码不做精确比对，仅校验关键内容子串 |
+| CI 集成 | 与现有 `packages/opencode` 测试一起运行，`bun test` 从包目录执行 |
+
+!!! Warning 测试执行位置
+    遵循 `do-not-run-tests-from-root` 规则，所有测试从 `packages/repl/` 目录内执行：`bun test`。
+
+</script>
+<script src="https://spring500.github.io/enhanced-doc/enhanced-doc.js"></script>
+</html>
