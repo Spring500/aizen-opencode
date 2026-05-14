@@ -1,12 +1,12 @@
 import pc from "picocolors"
 
-export function formatAIHeader(role: string, agent?: string, modelID?: string): string {
+export function formatAIHeader(agent?: string, modelID?: string): string {
   const a = agent ?? "?"
   const m = modelID ?? "?"
   return `\n${pc.blue("AI")} · ${pc.cyan(a)} · ${pc.dim(m)}\n`
 }
 
-export function formatPrompt(state: string): string {
+export function formatPrompt(): string {
   return pc.green("> ")
 }
 

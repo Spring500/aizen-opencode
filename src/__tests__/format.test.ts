@@ -10,18 +10,18 @@ function strip(s: string) { return s.replace(/\x1b\[\d+(;\d+)?m/g, "") }
 describe("format", () => {
   describe("formatAIHeader", () => {
     test("all fields present", () => {
-      const out = formatAIHeader("assistant", "build", "claude-sonnet-4")
+      const out = formatAIHeader("build", "claude-sonnet-4")
       expect(out).toContain("AI")
       expect(out).toContain("build")
       expect(out).toContain("claude-sonnet-4")
     })
     test("agent undefined", () => {
-      const out = formatAIHeader("assistant", undefined, "claude-sonnet-4")
+      const out = formatAIHeader(undefined, "claude-sonnet-4")
       expect(() => out).not.toThrow()
       expect(strip(out)).not.toContain("undefined")
     })
     test("modelID undefined", () => {
-      const out = formatAIHeader("assistant", "build", undefined)
+      const out = formatAIHeader("build", undefined)
       expect(() => out).not.toThrow()
       expect(strip(out)).not.toContain("undefined")
     })
@@ -29,7 +29,7 @@ describe("format", () => {
 
   describe("formatPrompt", () => {
     test("idle prompt", () => {
-      const out = formatPrompt("idle")
+      const out = formatPrompt()
       expect(out).toContain(">")
     })
   })
