@@ -25,7 +25,7 @@ export function createClient(config: ClientConfig) {
       sdk.session.get({ sessionID: id }).then((r) => r.data),
 
     createSession: (body: { title?: string }) =>
-      sdk.session.create({ title: body.title }).then((r) => r.data),
+      sdk.session.create({ title: body.title, directory: config.directory }).then((r) => r.data),
 
     sendMessage: (sid: string, body: { parts: any[]; model?: string; agent?: string }) =>
       sdk.session.prompt({ sessionID: sid, parts: body.parts, model: body.model, agent: body.agent }),
@@ -42,8 +42,8 @@ export function createClient(config: ClientConfig) {
     abortSession: (sid: string) =>
       sdk.session.abort({ sessionID: sid }),
 
-    forkSession: (sid: string, messageID: string) =>
-      sdk.session.fork({ sessionID: sid, messageID }),
+    forkSession: (sid: string, messageID?: string) =>
+      sdk.session.fork({ sessionID: sid, ...(messageID ? { messageID } : {}) }),
 
     getMessages: (sid: string, limit: number) =>
       sdk.session.messages({ sessionID: sid, limit }),

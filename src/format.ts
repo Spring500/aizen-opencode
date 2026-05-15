@@ -1,4 +1,26 @@
 import pc from "picocolors"
+import stringWidth from "string-width"
+
+const segmenter = new Intl.Segmenter("en", { granularity: "grapheme" })
+
+function truncateByWidth(str: string, maxWidth: number): string {
+  let result = ""
+  let width = 0
+  for (const { segment } of segmenter.segment(str)) {
+    const segWidth = stringWidth(segment)
+    if (width + segWidth > maxWidth) break
+    result += segment
+    width += segWidth
+  }
+  return result
+}
+
+function fitColumn(str: string, maxWidth: number): string {
+  const sw = stringWidth(str)
+  if (sw <= maxWidth) return str + " ".repeat(maxWidth - sw)
+  const truncated = truncateByWidth(str, maxWidth - 3) + "..."
+  return truncated + " ".repeat(maxWidth - stringWidth(truncated))
+}
 
 export function formatAIHeader(agent?: string, modelID?: string): string {
   const a = agent ?? "?"
@@ -118,7 +140,7 @@ export function formatHistory(
   const lines = items.map((msg) => {
     const prefix = msg.role === "user" ? pc.cyan("You:  ") : pc.green("AI:   ")
     let text = msg.text
-    if (text.length > 120) text = text.slice(0, 117) + "..."
+    if (stringWidth(text) > 120) text = truncateByWidth(text, 117) + "..."
     return prefix + text
   })
   return header + "\n" + lines.join("\n\n") + "\n" + formatSeparator()
@@ -130,11 +152,10 @@ export function formatSessions(
   if (sessions.length === 0) return pc.dim("无 session")
   const maxId = 20
   const maxTitle = 25
-  const trunc = (s: string, len: number) => s.length > len ? s.slice(0, len - 3) + "..." : s
-  const header = `${"Session ID".padEnd(maxId)}  ${"Title".padEnd(maxTitle)}  Updated`
+  const header = `${fitColumn("Session ID", maxId)}  ${fitColumn("Title", maxTitle)}  Updated`
   const sep = "─".repeat(header.length)
   const rows = sessions.map((s) => {
-    return `${pc.dim(trunc(s.id, maxId).padEnd(maxId))}  ${trunc(s.title, maxTitle).padEnd(maxTitle)}  ${s.updated}`
+    return `${pc.dim(fitColumn(s.id, maxId))}  ${fitColumn(s.title, maxTitle)}  ${s.updated}`
   })
   return [header, pc.dim(sep), ...rows].join("\n")
 }

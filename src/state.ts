@@ -62,3 +62,12 @@ export function finishMultiline(m: Multiline): string | null {
   if (m.buffer.length === 0) return null
   return m.buffer.join("\n")
 }
+
+export const enum ReplState {
+  Connecting,
+  Idle,
+  Streaming,
+  AwaitPerm,
+  SessionPick,
+  Exiting,
+}

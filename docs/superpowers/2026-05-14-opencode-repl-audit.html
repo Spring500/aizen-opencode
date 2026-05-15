@@ -1,0 +1,384 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+</head>
+<body>
+<script type="text/x-markdown">
+# opencode-repl 实现审计报告
+
+**日期**：2026-05-15　·　**审计范围**：`E:\project_aizen\aizen-opencode\src\` 全部 7 个源文件 + 6 个测试文件　·　**测试结果**：135 pass, 0 fail
+
+## 0. 审计方法
+
+以两个参考文档为基准，逐行比对源代码：
+
+- **设计规范**：`specs/2026-05-14-opencode-repl-design.html`
+- **测试计划**：`specs/2026-05-14-opencode-repl-test-plan.html`
+
+审计覆盖三个维度：**Spec 符合性**（实现做了什么 vs spec 要求做什么）、**正确性**（实现本身是否有 bug）、**测试完备性**（测试计划要求的用例是否全部落地）。
+
+---
+
+## 1. 严重问题（阻塞上线）
+
+### C1 — `/model` 设置但从未随 prompt 发给服务端
+
+**涉及文件**：`src/repl.ts:149` → `src/commands/prompt.ts:94`
+
+**Spec 要求**：`/model openai/gpt-4o` 将模型覆盖存入 `session.model`，后续 prompt 应携带此值发给 serve。
+
+**实际实现**：
+
+`repl.ts:149` 正确执行了 `currentSession = { ...currentSession, model: args }`，把模型字符串写入了 session 对象。
+
+但 `repl.ts:41` 调用 `sendToAI` 时：
+
+```ts
+// repl.ts:34-41 — sendToAI 内部，发送 prompt 时
+const result = await createPromptLoop({
+  client,
+  sessionID: currentSession.id,
+  events: client.subscribe(),
+  parts,                    // ← parts 里只有 files + text，没有 model
+  session: currentSession,   // ← 传了 session 对象，但 createPromptLoop 不用它
+  config: { thinking: config.thinking },
+  // ...
+})
+```
+
+进入 `prompt.ts:94`：
+
+```ts
+// prompt.ts:89-94 — createPromptLoop 中发送 prompt
+client.sendMessage(sessionID, { parts }).catch(() => {})
+//                              ^^^^^ 只传了 parts，没有任何 model 字段
+```
+
+再看 spec §6.2 通信表 row 6：
+
+```
+POST /session/:id/message  { parts, model?, agent? }
+                                  ^^^^^ model 是可选字段
+```
+
+**结论**：用户执行 `/model openai/gpt-4o` 后，`session.model` 被正确设置为 `"openai/gpt-4o"`（`/model` 无参时也正确打印当前值），但这个值**从未被传递给 `client.sendMessage`**。每次 prompt 都以服务端默认模型执行，`/model` 命令等同于无效操作。
+
+**修复方式**：`sendToAI` 调用 `createPromptLoop` 时传入 `model: currentSession.model`，`createPromptLoop` 在调用 `client.sendMessage` 时附带 `model` 参数。或者在 `sendToAI` 中直接将 `model` 注入 `parts` 之外的顶层字段。
+
+---
+
+### C2 — 透传 slash 命令后出现双重提示符
+
+**涉及文件**：`src/repl.ts:190-196`
+
+**Spec 要求**：未识别的 `/xxx` 应透传为 `POST /session/:id/command`，然后进入 streaming 等待 AI 回复，完成后回到 idle。（§4.2）
+
+**实际实现**：
+
+```ts
+// repl.ts:190-196 — line handler 中透传分支
+if (trimmed.startsWith("/")) {
+  const cmd = parseSlash(trimmed)
+  if (cmd === null) { rl.prompt(); return }
+  if (cmd.local) { await handleLocalCommand(cmd.command, cmd.args); rl.prompt(); return }
+  // ↓ 透传命令走到这里
+  await client.sendCommand(currentSession.id, { command: cmd.command, arguments: cmd.arguments })
+  await sendToAI({})          // ← sendToAI 内部在完成后会调用 rl.prompt()（repl.ts:74）
+  rl.prompt()                 // ← 这里又调用了一次 rl.prompt()
+  return
+}
+```
+
+**问题**：`sendToAI({})` 完成后（repl.ts:74）已执行 `rl.prompt()` 显示提示符。紧接着 `rl.prompt()` 又执行一次，用户会看到：
+
+```
+> /review
+AI · build · claude-sonnet-4
+...输出...
+────────────
+> >                   ← 两个提示符！
+```
+
+**同样的问题存在于 `handleLocalCommand` default 分支**（repl.ts:161-164），不过那个分支本身是死代码（见 M4）。
+
+**修复方式**：删除 line handler 中透传分支的 `rl.prompt()`（line 195），因为 `sendToAI` 已经做了。同理删除所有 `sendToAI` 调用后的冗余 `rl.prompt()`。
+
+---
+
+### C3 — 创建 session 失败时错误消息张冠李戴
+
+**涉及文件**：`src/index.ts:36-48`, `src/format.ts:39-41`
+
+**Spec 要求**：启动时若无法创建 session（`--new` 路径或自动创建失败），应打印 `formatSessionCreateError` 给出的"无法创建 session"消息，然后退出。（§3.6, §9）
+
+**实际实现**：
+
+`format.ts:39-41` 导出了正确的函数：
+
+```ts
+export function formatSessionCreateError(reason: string): string {
+  return `${pc.red(pc.bold("无法创建 session"))} ${reason}`
+}
+```
+
+但 `index.ts` 中**从未 import 也从未使用它**。创建失败时的 catch 路径是：
+
+```ts
+// index.ts:46 — 外层 catch，无论什么原因都走这里
+init().catch((err: Error) => { console.log(formatConnectionError(err.message)); process.exit(1) })
+//                                          ^^^^^^^^^^^^^^^^^^^^^^
+//                                          永远打印"无法连接"，即使实际错误是创建 session 失败
+```
+
+**后果**：
+- 用户在 `--new` 模式下创建 session 失败（如权限不足），看到的是 `"无法连接 Permission denied"`
+- 用户无法区分"服务端根本连不上"和"服务端连得上但创建失败"
+
+**修复方式**：在 `index.ts` 中 import `formatSessionCreateError`，在 `--new` 和自动创建 session 的 catch 分支中使用它。
+
+---
+
+## 2. 中等问题（应修复）
+
+### M4 — `handleLocalCommand` default 分支是死代码
+
+**涉及文件**：`src/repl.ts:161-164`
+
+```ts
+async function handleLocalCommand(command: string, args: string) {
+  switch (command) {
+    case "quit": ...
+    case "sessions": ...
+    // ... 12 个本地命令全部有显式 case
+    default:
+      await client.sendCommand(currentSession.id, { command, arguments: args })
+      await sendToAI({})           // ← 永远走不到这里
+  }
+}
+```
+
+`parseSlash` 对 `local: true` 的结果只包含 `LOCAL_COMMANDS` Set 中的 12 个命令名。而这个 switch 覆盖了全部 12 个命令。`default` 分支在物理上不可达。
+
+此外，如果它在未来某天可达了，它还会触发 C2 同样的双重提示符问题。
+
+**修复方式**：删除 `default` 分支。如果将来新增本地命令但忘记加 case，TypeScript 不会提示（因为 `command` 是 `string` 类型）。可以保留一个 `console.warn` 作为防御，但不做 `sendToAI`。
+
+---
+
+### M5 — SSE 流循环无限阻塞，无超时保护
+
+**涉及文件**：`src/commands/prompt.ts:96-97`, `src/repl.ts:44-47`
+
+**场景**：用户发送 prompt → serve 接收 → AI 开始执行 → SSE 连接静默断开（网络闪断、serve 进程 OOM、容器重启）→ serve 永远不会再发 `session.status.idle` 事件。
+
+**实际行为**：
+
+```ts
+// prompt.ts:96 — for await 循环
+for await (const event of events.stream) {
+  if (aborted) return { state: "aborted" as const, outputs: state.outputs }
+  // ...
+}
+```
+
+`aborted` 由 `repl.ts` 的 SIGINT handler 设置：
+
+```ts
+// repl.ts:203-207
+rl.on("SIGINT", () => {
+  if (activeAbort) { activeAbort.abort(); ... }
+  // ...
+})
+```
+
+`activeAbort.abort()` 只触发 `AbortController.signal` 的 `abort` 事件，设置 `aborted = true`。但 `for await` **正在阻塞等待下一次 `yield`**，它不会在 `aborted` 变为 `true` 时自动退出——只有当生成器产生下一个值或抛出时才会检查 `aborted`。
+
+如果 SSE 连接已断，生成器永远不会有下一个值。REPL 永久卡死，Ctrl+C 无效。
+
+**修复方式**：
+1. 在 `events.stream` 上包装一个超时机制（`Promise.race` + 定时器）
+2. 或使用 `ReadableStream` 的 `cancel()` 方法强制中断
+3. 或在 abort signal 上监听并主动 break
+
+---
+
+### M6 — subscribe() 先于 sendMessage() 调用的时序不确定
+
+**涉及文件**：`src/client.ts:51`, `src/commands/prompt.ts:94-96`
+
+```ts
+// prompt.ts:94-96
+client.sendMessage(sessionID, { parts }).catch(() => {})
+// ...
+for await (const event of events.stream) { ... }
+```
+
+而 `repl.ts:38-42` 中 events 已提前创建：
+
+```ts
+const result = await createPromptLoop({
+  events: client.subscribe(),  // ← subscribe 在 sendMessage 之前被调用
+  // ...
+})
+```
+
+SDK 的 `sdk.event.subscribe()` 何时建立 HTTP 连接（调用时立即建立？还是第一次 `next()` 时延迟建立？）——这是 SDK 内部行为，代码中无文档说明。
+
+- **如果立即建立**：事件在 `sendMessage` 发出之前就开始流入，可能导致 prompt 发送前就收到旧 session 的残留事件。
+- **如果延迟建立**：没有问题。
+
+**风险等级**：取决于 SDK 实现。在当前 `@opencode-ai/sdk@1.15.0` 中需要实际验证。
+
+**缓解方式**：在 `createPromptLoop` 中先 `await sendMessage()` 返回，再开始迭代 `events.stream`。或将 subscribe() 调用移到 sendMessage 之后。
+
+---
+
+### M7 — `/fork` 无参时空 `messageID` 可能导致歧义
+
+**涉及文件**：`src/repl.ts:122-126`
+
+```ts
+case "fork": {
+  if (!args) {
+    const id = await pickSession(client)
+    if (!id) break
+    const res = await client.forkSession(id, "")  // ← messageID 为空字符串
+    // ...
+  }
+  const res = await client.forkSession(currentSession.id, args)
+  // ...
+}
+```
+
+Spec §4.1 将 `/fork [messageID]` 定义为可选参数。`messageID` 的语义是"从哪条消息处 fork"。当不传时，期望行为是从最新消息 fork。
+
+传空字符串 `""` 和传 `undefined`/省略是两回事。SDK 的 `session.fork({ sessionID, messageID })` 可能对空字符串有特殊处理（例如报错 `"messageID not found"`），而省略时可能默认 fork 最新。
+
+**修复方式**：确认 SDK 对空 `messageID` 的行为，或显式传 `undefined`。
+
+---
+
+## 3. 轻微问题
+
+### m8 — `formatAIHeader` 签名与 spec 不一致
+
+**Spec 定义**（§7.1）：`formatAIHeader("assistant", "opencode", "claude-sonnet-4")` — 三个参数，第一个是 role。
+
+**实现**（`format.ts:3`）：`(agent?, modelID?)` — 两个参数，没有 role。
+
+这是因为 Task 3 代码审查时发现 role 参数未被使用，删除了。功能无影响，但与 spec 的文字描述不一致。
+
+---
+
+### m9 — 宽字符（CJK/emoji）在表格中对齐偏移
+
+`format.ts:137` 的 `padEnd()` 按 UTF-16 code unit 计数。中文字符在终端占 2 列，`padEnd(25)` 对"二十五个中文字符测试用例"计算为 12 个 code unit，但视觉宽度是 24 列，导致表格列错位。
+
+---
+
+### m10 — `formatHistory` 可能在 emoji 中间截断
+
+`format.ts:121`：`text.slice(0, 117)` — `slice` 按 UTF-16 code unit 截断。对于多字节 emoji（如 👨‍👩‍👧‍👦 由 7 个 code unit 组成），可能在中间切断，产生乱码（`�`）。
+
+---
+
+### m11 — 版本号硬编码
+
+`index.ts:26` 直接写 `"0.1.0"` 而非读取 `package.json`。后续发布时版本不一致。
+
+---
+
+## 4. Spec 符合性缺口
+
+以下是 Spec 明确要求但实现中缺失或偏离的功能：
+
+| # | Spec 引用 | 要求 | 实现状态 |
+|---|-----------|------|----------|
+| S1 | §3.4 | SSE 在 await_perm 中断时应打印 "⚠ 连接中断，权限请求可能已被拒绝" | `repl.ts` 的 catch 分支使用通用 `formatDisconnectMessage()`，不是 `formatDisconnectPermMessage()` |
+| S2 | §3.5 | `session_pick` 进入时 `GET /session?directory=<path>&roots=true` | `pickSession` 调用 `listSessions({ roots: true })`，未传 `directory`。依赖 SDK 从 client config 自动附加 |
+| S3 | §6.2 row 2 | `POST /session` 时通过 `?directory=` query 传目录 | `client.ts:27` 调用 `sdk.session.create({ title })`，未显式传 directory。SDK 从 client config 的 header 中自动附加 |
+| S4 | §4.1 | `/switch` 切换时清空 `session.approved` | 实现用 `createSession({ id: args, title: "已切换" })` 新建 session 对象，间接清空 approved。但 `createSession` 总是返回空 Set，所以正确。不过 `title` 被硬编码为"已切换"而非查询真实 title |
+| S5 | §3.6 | connecting 状态应打印 "opencode-repl v1.0.0" 欢迎语 | `index.ts` 启动时只打印 `formatConnecting(url)`，无版本号/logo |
+
+---
+
+## 5. 测试计划缺口
+
+以下测试用例在测试计划（Part 1）中明确列出，但对应的测试文件中缺失：
+
+### 5.1 `slash.test.ts` 缺失的用例
+
+| 测试计划要求 | 当前是否覆盖 |
+|-------------|-------------|
+| `/sessions` 无参（默认不限制数量） | ❌ 仅有 `/sessions 5` |
+| `/history` 无参（默认 limit=10） | ❌ 仅有 `/history 20` |
+| `/model` 无参（打印当前模型） | ❌ 仅有 `/model with spec` |
+| 输入仅为 `/`（裸斜杠） | ❌ |
+
+### 5.2 `client.test.ts` 缺失的用例
+
+| 测试计划要求 | 当前是否覆盖 |
+|-------------|-------------|
+| `createClient` 无效 URL（应抛出或返回错误） | ❌ 测试计划要求，Task 11 重构 client.ts 后此用例被移除 |
+| `createClient` 空 directory（应使用默认值或抛出） | ❌ 同上 |
+| 网络错误传播（fetch 返回 ECONNREFUSED） | ❌ 同上 |
+| HTTP 4xx/5xx 错误传播 | ❌ 同上 |
+
+**原因**：Task 11 将 client.ts 从手写 HTTP 封装改为委托 `@opencode-ai/sdk/v2`。SDK 有自己的错误拦截器和 fetch 超时机制，原有通过 mockFetch 注入错误的测试方式不再适用。重构时简化了错误传播测试，但未编写等价的 SDK 层错误测试。
+
+### 5.3 `prompt.test.ts` 缺失的用例
+
+| 测试计划要求 | 当前是否覆盖 |
+|-------------|-------------|
+| 多行文本增量（含换行） | ❌ |
+| abort 请求失败（API 返回错误） | ❌ |
+| permission reply 失败 | ❌ |
+| question.asked 空字符串回复 | ❌ |
+| createPromptLoop abort 中流 | ❌ |
+
+### 5.4 `format.test.ts` 缺失的用例
+
+| 测试计划要求 | 当前是否覆盖 |
+|-------------|-------------|
+| `formatConnecting` / `formatConnected` 在集成流程中的输出 | ⚠️ 有单元测试但无端到端验证 |
+| `/sessions` 多条记录的表头验证 | ✅ 已有 |
+
+---
+
+## 6. 测试通过但未覆盖的逻辑路径
+
+当前 135 个测试全部通过，但以下关键路径**零覆盖**：
+
+1. **SSE 连接自然中断后的恢复**：`prompt.ts` 的 catch 分支仅在 `repl.ts:60` 作为 AbortError fallback 存在，没有任何测试构造 SSE 中断场景
+2. **`sendCommand` + `sendToAI({})` 组合流程**：透传 slash 命令的完整代码路径没有测试
+3. **`/switch` 后 session 上下文完整切换**：包括 approved 清空、文件保留、旧 session 事件过滤
+4. **Ctrl+C 在 streaming 中两次的退出路径**：spec 说第一次 abort 回 idle，第二次退出，无测试
+5. **`--thinking` 参数传递链路**：`index.ts` → `repl.ts` → `createPromptLoop` → `processEvent` 的完整链路无测试
+
+---
+
+## 7. 架构观察
+
+- **状态机是隐式的**：6 个状态（idle/streaming/await_perm/session_pick/connecting/exiting）没有 `enum` 或 `currentState` 变量。状态通过代码位置隐含——idle 在 readline 回调中，streaming 在 sendToAI 内部，await_perm 在 onPermission 回调中。这对正确性验证和错误恢复不利，但无运行时 bug。
+- **跨模块一致性良好**：所有 import/export 匹配，类型传递正确，无遗漏的依赖。
+- **Ctrl+C 的分层处理正确**：idle 中 SIGINT → 退出；streaming/await_perm 中 SIGINT → abort → idle。
+
+---
+
+## 8. 总结
+
+| 类别 | 数量 |
+|------|------|
+| 严重（阻塞上线） | 3 |
+| 中等（应修复） | 4 |
+| 轻微 | 4 |
+| Spec 缺口 | 5 |
+| 测试缺口 | 16 |
+
+**最优先修复 C1**（模型切换无效）和 **C2**（双重提示符），这两个直接影响可用性。**C3**（错误消息张冠李戴）影响故障诊断。
+
+测试缺口中，最紧迫的是补齐 `prompt.test.ts` 中 abort/error 路径，这些是 REPL 在远程不稳定的网络环境下的核心可靠性保障。
+</script>
+<script src="https://spring500.github.io/enhanced-doc/enhanced-doc.js"></script>

@@ -169,6 +169,14 @@ describe("processEvent", () => {
     processEvent(event, state, { thinking: false })
     expect(outputs.length).toBe(0)
   })
+
+  test("multiline text part -> added to outputs", () => {
+    const outputs: string[] = []
+    const event = { type: "message.part.updated", properties: { sessionID: "ses_001", part: { type: "text", text: "line1\nline2\nline3", time: { end: 1 } } } }
+    const state = { session, headerShown: true, outputs }
+    processEvent(event, state, { thinking: false })
+    expect(outputs.some(l => l.includes("line1\nline2\nline3"))).toBe(true)
+  })
 })
 
 describe("createPromptLoop", () => {
@@ -220,5 +228,108 @@ describe("createPromptLoop", () => {
     })
     expect(permReplied).toBe("once")
     expect(result.state).toBe("completed")
+  })
+
+  test("abort mid-stream returns aborted state", async () => {
+    const client = {
+      sendMessage: async () => ({ ok: true }),
+      replyPermission: async () => ({}),
+      replyQuestion: async () => ({}),
+    } as any
+
+    const ac = new AbortController()
+    const events: any[] = [
+      { type: "message.part.updated", properties: { sessionID: "ses_001", part: { type: "text", text: "before abort", time: { end: 1 } } } },
+      { type: "message.part.updated", properties: { sessionID: "ses_001", part: { type: "text", text: "after abort", time: { end: 1 } } } },
+    ]
+    async function* gen() {
+      yield events[0]
+      ac.abort()
+      yield events[1]
+    }
+
+    const result = await createPromptLoop({
+      client, sessionID: "ses_001",
+      events: { stream: gen() },
+      parts: [{ type: "text", text: "test" }],
+      session: { id: "ses_001", title: "test", files: [], approved: new Set() },
+      config: { thinking: false },
+      signal: ac.signal,
+    })
+    expect(result.state).toBe("aborted")
+  })
+
+  test("question flow: asked → answered → continues", async () => {
+    let questionReplied = ""
+    const client = {
+      sendMessage: async () => ({ ok: true }),
+      replyQuestion: async (_id: string, answer: string) => { questionReplied = answer },
+      replyPermission: async () => ({}),
+    } as any
+
+    const events: any[] = [
+      { type: "question.asked", properties: { sessionID: "ses_001", id: "q1", question: "端口?" } },
+      { type: "session.status", properties: { sessionID: "ses_001", status: { type: "idle" } } },
+    ]
+    async function* gen() { for (const e of events) yield e }
+
+    const result = await createPromptLoop({
+      client, sessionID: "ses_001",
+      events: { stream: gen() },
+      parts: [{ type: "text", text: "what port" }],
+      session: { id: "ses_001", title: "test", files: [], approved: new Set() },
+      config: { thinking: false },
+      onQuestion: async () => "8080",
+    })
+    expect(questionReplied).toBe("8080")
+    expect(result.state).toBe("completed")
+  })
+
+  test("permission without onPermission handler outputs prompt text", async () => {
+    const client = {
+      sendMessage: async () => ({ ok: true }),
+      replyPermission: async () => ({}),
+      replyQuestion: async () => ({}),
+    } as any
+
+    const events: any[] = [
+      { type: "permission.asked", properties: { sessionID: "ses_001", id: "req_z", permission: "bash", patterns: ["rm"] } },
+      { type: "session.status", properties: { sessionID: "ses_001", status: { type: "idle" } } },
+    ]
+    async function* gen() { for (const e of events) yield e }
+
+    const result = await createPromptLoop({
+      client, sessionID: "ses_001",
+      events: { stream: gen() },
+      parts: [{ type: "text", text: "delete" }],
+      session: { id: "ses_001", title: "test", files: [], approved: new Set() },
+      config: { thinking: false },
+    })
+    expect(result.state).toBe("completed")
+    expect(result.outputs.join("")).toContain("批准？")
+  })
+
+  test("question without onQuestion handler outputs prompt text", async () => {
+    const client = {
+      sendMessage: async () => ({ ok: true }),
+      replyPermission: async () => ({}),
+      replyQuestion: async () => ({}),
+    } as any
+
+    const events: any[] = [
+      { type: "question.asked", properties: { sessionID: "ses_001", id: "q2", question: "端口?" } },
+      { type: "session.status", properties: { sessionID: "ses_001", status: { type: "idle" } } },
+    ]
+    async function* gen() { for (const e of events) yield e }
+
+    const result = await createPromptLoop({
+      client, sessionID: "ses_001",
+      events: { stream: gen() },
+      parts: [{ type: "text", text: "which port" }],
+      session: { id: "ses_001", title: "test", files: [], approved: new Set() },
+      config: { thinking: false },
+    })
+    expect(result.state).toBe("completed")
+    expect(result.outputs.join("")).toContain("端口?")
   })
 })

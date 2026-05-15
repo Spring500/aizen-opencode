@@ -30,6 +30,9 @@ describe("slash", () => {
     test("/history 20", () => {
       expect(parseSlash("/history 20")).toEqual({ local: true, command: "history", args: "20" })
     })
+    test("/history no args", () => {
+      expect(parseSlash("/history")).toEqual({ local: true, command: "history", args: "" })
+    })
     test("/file with path", () => {
       expect(parseSlash("/file src/index.ts")).toEqual({ local: true, command: "file", args: "src/index.ts" })
     })
@@ -42,11 +45,17 @@ describe("slash", () => {
     test("/model with spec", () => {
       expect(parseSlash("/model openai/gpt-4o")).toEqual({ local: true, command: "model", args: "openai/gpt-4o" })
     })
+    test("/model no args", () => {
+      expect(parseSlash("/model")).toEqual({ local: true, command: "model", args: "" })
+    })
     test("/info", () => {
       expect(parseSlash("/info")).toEqual({ local: true, command: "info", args: "" })
     })
     test("/sessions 5", () => {
       expect(parseSlash("/sessions 5")).toEqual({ local: true, command: "sessions", args: "5" })
+    })
+    test("/sessions no args", () => {
+      expect(parseSlash("/sessions")).toEqual({ local: true, command: "sessions", args: "" })
     })
     test("case insensitive /QUIT", () => {
       expect(parseSlash("/QUIT")).toEqual({ local: true, command: "quit", args: "" })
@@ -61,7 +70,7 @@ describe("slash", () => {
     test("/compact", () => { const r = parseSlash("/compact"); expect(r!.local).toBe(false) })
     test("/release with args", () => { const r = parseSlash("/release minor"); expect(r!.local).toBe(false); expect(r!.command).toBe("release"); expect(r!.arguments).toBe("minor") })
     test("/unknown", () => { const r = parseSlash("/foobar baz"); expect(r!.local).toBe(false) })
-    test("case insensitive /REVIEW", () => { const r = parseSlash("/REVIEW"); expect(r!.local).toBe(false); expect(r!.command).toBe("review") })
+    test("bare /", () => { const r = parseSlash("/"); expect(r!.local).toBe(false); expect(r!.command).toBe(""); expect(r!.arguments).toBe("") })
   })
 
   describe("non-slash", () => {

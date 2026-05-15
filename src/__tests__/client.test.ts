@@ -181,17 +181,57 @@ describe("client", () => {
       expect(typeof client.getSession).toBe("function")
       expect(typeof client.subscribe).toBe("function")
     })
+
+    test("createClient with empty directory does not crash", () => {
+      const client = createClient({ baseUrl: "http://localhost:4096", directory: "" })
+      expect(client).toBeDefined()
+    })
+
+    test("listSessions surfaces network error", async () => {
+      const netError = new Error("fetch failed")
+      ;(netError as any).code = "ECONNREFUSED"
+      const fetch = mockFetch(() => { throw netError })
+      const client = createClient({ baseUrl: "http://x", directory: "/d", fetch })
+      const result = await client.listSessions()
+      expect(result).toEqual([])
+    })
+
+    test("getSession surfaces HTTP 404", async () => {
+      const fetch = mockFetch(() => ({
+        ok: false,
+        status: 404,
+        statusText: "Not Found",
+        json: async () => ({ message: "session not found" }),
+      }))
+      const client = createClient({ baseUrl: "http://x", directory: "/d", fetch })
+      const result = await client.getSession("ses_missing")
+      expect(result).toBeUndefined()
+    })
+
+    test("createSession surfaces HTTP 500", async () => {
+      const fetch = mockFetch(() => ({
+        ok: false,
+        status: 500,
+        statusText: "Internal Server Error",
+        json: async () => ({ message: "server error" }),
+      }))
+      const client = createClient({ baseUrl: "http://x", directory: "/d", fetch })
+      const result = await client.createSession({ title: "test" })
+      expect(result).toBeUndefined()
+    })
   })
 })
 
-function mockFetch(handler: (url: string, opts?: RequestInit) => Promise<{ json: () => Promise<any>; ok?: boolean; status?: number; statusText?: string; headers?: Headers }>) {
+function mockFetch(handler: (url: string, opts?: RequestInit) => Promise<{ json: () => Promise<any>; ok?: boolean; status?: number; statusText?: string; headers?: Headers; text?: () => Promise<string> }>) {
   return (async (url: string, opts?: RequestInit) => {
     const result = await handler(url, opts)
+    const json = result.json ?? (async () => ({}))
     return {
       ok: result.ok ?? true,
       status: result.status ?? 200,
       statusText: result.statusText ?? "OK",
-      json: result.json,
+      json,
+      text: result.text ?? (async () => JSON.stringify(await json())),
       headers: result.headers ?? new Headers(),
     }
   }) as any

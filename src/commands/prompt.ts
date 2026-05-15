@@ -84,6 +84,7 @@ export function processEvent(event: any, state: State, config: ConfigSlice): Eve
 export async function createPromptLoop(opts: {
   client: { sendMessage: Function; replyPermission: Function; replyQuestion: Function }
   sessionID: string; events: any; parts: any[]; session: Session; config: ConfigSlice
+  model?: string
   onPermission?: Function; onQuestion?: Function; signal?: AbortSignal
 }) {
   const { client, sessionID, events, parts, session, config } = opts
@@ -91,11 +92,34 @@ export async function createPromptLoop(opts: {
   let aborted = false
 
   if (opts.signal) opts.signal.addEventListener("abort", () => { aborted = true })
-  client.sendMessage(sessionID, { parts }).catch(() => {})
+  await client.sendMessage(sessionID, { parts, model: opts.model }).catch(() => {})
 
-  for await (const event of events.stream) {
+  const STREAM_TIMEOUT_MS = 5 * 60 * 1000
+  const iterator = events.stream[Symbol.asyncIterator]()
+
+  while (true) {
     if (aborted) return { state: "aborted" as const, outputs: state.outputs }
-    const result = processEvent(event, state, config)
+
+    const promises: Promise<IteratorResult<any, any>>[] = [
+      iterator.next(),
+      new Promise<IteratorResult<any, any>>((resolve) =>
+        setTimeout(() => resolve({ done: true, value: undefined }), STREAM_TIMEOUT_MS)
+      ),
+    ]
+    if (opts.signal) {
+      promises.push(
+        new Promise<IteratorResult<any, any>>((_, reject) =>
+          opts.signal!.addEventListener("abort", () => reject(new Error("aborted")), { once: true })
+        )
+      )
+    }
+
+    let next: IteratorResult<any, any>
+    try { next = await Promise.race(promises) } catch { return { state: "aborted" as const, outputs: state.outputs } }
+
+    if (next.done) break
+
+    const result = processEvent(next.value, state, config)
 
     if (result.autoReply) {
       await client.replyPermission(result.autoReply.requestID, result.autoReply.reply)

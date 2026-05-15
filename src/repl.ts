@@ -1,6 +1,6 @@
 import * as readline from "node:readline"
 import { select } from "@inquirer/prompts"
-import { type Config, type Session, createSession } from "./state"
+import { type Config, type Session, ReplState, createSession } from "./state"
 import { parseSlash } from "./commands/slash"
 import { createPromptLoop } from "./commands/prompt"
 import {
@@ -13,18 +13,27 @@ export async function startREPL(config: Config, session: Session, client: any) {
   let currentSession = session
   let multiline: { active: boolean; buffer: string[] } = { active: false, buffer: [] }
   let activeAbort: AbortController | null = null
+  let state = ReplState.Connecting
 
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout, prompt: formatPrompt() })
 
   function setPrompt() {
     rl.setPrompt(multiline.active ? "> " : formatPrompt())
   }
-  setPrompt()
-  rl.prompt()
+
+  function toIdle() {
+    state = ReplState.Idle
+    setPrompt()
+    rl.prompt()
+  }
+
+  toIdle()
 
   function print(out: string) { process.stdout.write(out + "\n") }
 
   async function sendToAI(input: { message?: string; command?: string; arguments?: string }) {
+    state = ReplState.Streaming
+
     const parts: Record<string, unknown>[] = [
       ...currentSession.files.map((f: string) => ({ type: "file", url: `file://${f}`, filename: f, mime: "text/plain" })),
     ]
@@ -39,10 +48,13 @@ export async function startREPL(config: Config, session: Session, client: any) {
       parts,
       session: currentSession,
       config: { thinking: config.thinking },
+      model: currentSession.model,
       onPermission: async (perm: any) => {
+        state = ReplState.AwaitPerm
         return new Promise<string>((resolve) => {
           print(formatPermissionPrompt(perm.permission, perm.patterns))
           rl.question("", (answer: string) => {
+            state = ReplState.Streaming
             const a = answer.trim().toLowerCase()
             if (a === "y") resolve("once")
             else if (a === "a") resolve("always")
@@ -58,7 +70,9 @@ export async function startREPL(config: Config, session: Session, client: any) {
       },
       signal: activeAbort.signal,
     }).catch((err: Error) => {
-      if (err.name !== "AbortError") print(formatDisconnectMessage())
+      if (err.name !== "AbortError") {
+        print(state === ReplState.AwaitPerm ? formatDisconnectPermMessage() : formatDisconnectMessage())
+      }
       return { state: "aborted" as const, outputs: [] as string[] }
     })
 
@@ -67,32 +81,30 @@ export async function startREPL(config: Config, session: Session, client: any) {
     if (result.state === "completed") {
       for (const line of result.outputs) print(line)
       print(formatSeparator())
-    } else if (result.state === "aborted") {
-      print(formatAbortMessage())
     }
-    setPrompt()
-    rl.prompt()
+    if (result.state === "aborted") print(formatAbortMessage())
+    toIdle()
   }
 
   async function pickSession(client: any): Promise<string | null> {
-    try {
-      const list = await client.listSessions({ roots: true })
-      if (list.length === 0) { print("无可用 session"); return null }
-      const chosen = await select({
-        message: "选择会话",
-        choices: list.map((s: any) => ({
-          name: `${s.title ?? "无标题"}`,
-          value: s.id,
-          description: `${s.id.slice(-8)} · ${new Date(s.time?.updated ?? Date.now()).toLocaleString()}`,
-        })),
-      })
-      return chosen as string
-    } catch { return null }
+    const prev = state
+    state = ReplState.SessionPick
+    const list = await client.listSessions({ roots: true, directory: config.directory })
+    if (list.length === 0) { state = prev; print("无可用 session"); return null }
+    const chosen = await select({
+      message: "选择会话",
+      choices: list.map((s: any) => ({
+        name: `${s.title ?? "无标题"}`,
+        value: s.id,
+        description: `${s.id.slice(-8)} · ${new Date(s.time?.updated ?? Date.now()).toLocaleString()}`,
+      })),
+    })
+    return chosen as string
   }
 
   async function handleLocalCommand(command: string, args: string) {
     switch (command) {
-      case "quit": case "exit": print("再见"); process.exit(0)
+      case "quit": case "exit": state = ReplState.Exiting; print("再见"); process.exit(0)
       case "sessions": {
         const limit = args ? parseInt(args) : undefined
         const list = await client.listSessions({ roots: true, limit })
@@ -106,7 +118,8 @@ export async function startREPL(config: Config, session: Session, client: any) {
           if (!id) break
           args = id
         }
-        currentSession = createSession({ id: args, title: "已切换" })
+        const sessionInfo = await client.getSession(args)
+        currentSession = createSession({ id: args, title: sessionInfo.title ?? args })
         print(`已切换到 ${args}`)
         break
       case "new": {
@@ -120,7 +133,7 @@ export async function startREPL(config: Config, session: Session, client: any) {
         if (!args) {
           const id = await pickSession(client)
           if (!id) break
-          const res = await client.forkSession(id, "")
+          const res = await client.forkSession(id)
           currentSession = createSession({ id: res.id, title: res.title ?? "fork" })
           print(`已 fork: ${res.id}`)
           break
@@ -158,9 +171,6 @@ export async function startREPL(config: Config, session: Session, client: any) {
         id: currentSession.id, title: currentSession.title, directory: config.directory,
         model: currentSession.model, files: currentSession.files,
       })); break
-      default:
-        await client.sendCommand(currentSession.id, { command, arguments: args })
-        await sendToAI({})
     }
   }
 
@@ -172,7 +182,7 @@ export async function startREPL(config: Config, session: Session, client: any) {
         const text = multiline.buffer.join("\n")
         multiline = { active: false, buffer: [] }
         if (text.trim()) await sendToAI({ message: text })
-        else { setPrompt(); rl.prompt() }
+        else toIdle()
         return
       }
       multiline.buffer.push(line)
@@ -188,20 +198,28 @@ export async function startREPL(config: Config, session: Session, client: any) {
 
     if (trimmed.startsWith("/")) {
       const cmd = parseSlash(trimmed)
-      if (cmd === null) { rl.prompt(); return }
-      if (cmd.local) { await handleLocalCommand(cmd.command, cmd.args); rl.prompt(); return }
+      if (cmd === null) { toIdle(); return }
+      if (cmd.local) { await handleLocalCommand(cmd.command, cmd.args); toIdle(); return }
       await client.sendCommand(currentSession.id, { command: cmd.command, arguments: cmd.arguments })
       await sendToAI({})
-      rl.prompt()
       return
     }
 
-    if (!trimmed) { rl.prompt(); return }
+    if (!trimmed) { toIdle(); return }
     await sendToAI({ message: trimmed })
   })
 
   rl.on("SIGINT", () => {
-    if (activeAbort) { activeAbort.abort(); activeAbort = null; print(formatAbortMessage()); multiline = { active: false, buffer: [] }; setPrompt(); rl.prompt(); return }
-    print("再见"); process.exit(0)
+    if (activeAbort) {
+      activeAbort.abort()
+      activeAbort = null
+      print(formatAbortMessage())
+      multiline = { active: false, buffer: [] }
+      toIdle()
+      return
+    }
+    state = ReplState.Exiting
+    print("再见")
+    process.exit(0)
   })
 }

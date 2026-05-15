@@ -2,8 +2,11 @@ import { createConfig, createSession } from "./state"
 import { createClient } from "./client"
 import {
   formatConnecting, formatConnected, formatConnectionError,
-  formatSessionNotFound,
+  formatSessionNotFound, formatSessionCreateError,
 } from "./format"
+
+const pkg = await Bun.file(new URL("../package.json", import.meta.url).pathname).json()
+const VERSION = pkg.version
 
 function parseArgs(): Record<string, string | boolean> {
   const args = process.argv.slice(2)
@@ -23,7 +26,7 @@ function parseArgs(): Record<string, string | boolean> {
   --thinking       show thinking blocks
   --help, -h       show help
   --version, -v    show version`); process.exit(0)
-      case "--version": case "-v": console.log("0.1.0"); process.exit(0)
+      case "--version": case "-v": console.log(VERSION); process.exit(0)
     }
   }
   return opts
@@ -31,27 +34,60 @@ function parseArgs(): Record<string, string | boolean> {
 
 const config = createConfig(parseArgs() as any)
 
+console.log(`opencode-repl v${VERSION}`)
 console.log(formatConnecting(config.serverUrl))
 
 async function init() {
   const client = createClient({ baseUrl: config.serverUrl, directory: config.directory })
-  let sessionID: string, title = ""
 
   if (config.initSession) {
-    try { const s = await client.getSession(config.initSession); sessionID = s.id; title = s.title ?? "" }
-    catch { console.log(formatSessionNotFound(config.initSession)); process.exit(1) }
-  } else if (config.newSession) {
-    const s = await client.createSession({ title: "新会话" }); sessionID = s.id; title = s.title ?? "新会话"
-  } else {
-    const list = await client.listSessions({ roots: true, limit: 1 })
-    if (list.length > 0) { sessionID = list[0].id; title = list[0].title ?? "" }
-    else { const s = await client.createSession({}); sessionID = s.id; title = s.title ?? "新会话" }
+    try {
+      const s = await client.getSession(config.initSession)
+      const session = createSession({ id: s.id, title: s.title ?? "" })
+      console.log(formatConnected(s.id, s.title ?? ""))
+      const { startREPL } = await import("./repl")
+      await startREPL(config, session, client)
+    } catch {
+      console.log(formatSessionNotFound(config.initSession))
+      process.exit(1)
+    }
+    return
   }
 
-  const session = createSession({ id: sessionID, title })
-  console.log(formatConnected(sessionID, title))
-  const { startREPL } = await import("./repl")
-  await startREPL(config, session, client)
+  if (config.newSession) {
+    try {
+      const s = await client.createSession({ title: "新会话" })
+      const session = createSession({ id: s.id, title: s.title ?? "新会话" })
+      console.log(formatConnected(s.id, s.title ?? "新会话"))
+      const { startREPL } = await import("./repl")
+      await startREPL(config, session, client)
+    } catch (err) {
+      console.log(formatSessionCreateError((err as Error).message))
+      process.exit(1)
+    }
+    return
+  }
+
+  const list = await client.listSessions({ roots: true, limit: 1 })
+  if (list.length > 0) {
+    const s = list[0]
+    const session = createSession({ id: s.id, title: s.title ?? "" })
+    console.log(formatConnected(s.id, s.title ?? ""))
+    const { startREPL } = await import("./repl")
+    await startREPL(config, session, client)
+    return
+  }
+
+  try {
+    const s = await client.createSession({})
+    const session = createSession({ id: s.id, title: s.title ?? "新会话" })
+    console.log(formatConnected(s.id, s.title ?? "新会话"))
+    const { startREPL } = await import("./repl")
+    await startREPL(config, session, client)
+  } catch (err) {
+    console.log(formatSessionCreateError((err as Error).message))
+    process.exit(1)
+  }
 }
 
 init().catch((err: Error) => { console.log(formatConnectionError(err.message)); process.exit(1) })
