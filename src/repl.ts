@@ -48,7 +48,6 @@ export async function startREPL(config: Config, session: Session, client: any) {
       parts,
       session: currentSession,
       config: { thinking: config.thinking },
-      model: currentSession.model,
       onPermission: async (perm: any) => {
         state = ReplState.AwaitPerm
         return new Promise<string>((resolve) => {
@@ -164,7 +163,11 @@ export async function startREPL(config: Config, session: Session, client: any) {
       case "files": print(formatFiles(currentSession.files)); break
       case "clear-files": currentSession = { ...currentSession, files: [] }; print(formatFiles(currentSession.files)); break
       case "model":
-        if (args) { currentSession = { ...currentSession, model: args }; print(`模型: ${args}`) }
+        if (args) {
+          currentSession = { ...currentSession, model: args }
+          await client.sendCommand(currentSession.id, { command: "model", arguments: args, model: args })
+          print(`模型: ${args}`)
+        }
         else print(`当前模型: ${currentSession.model ?? "默认"}`)
         break
       case "info": print(formatInfo({

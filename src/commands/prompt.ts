@@ -84,7 +84,8 @@ export function processEvent(event: any, state: State, config: ConfigSlice): Eve
 export async function createPromptLoop(opts: {
   client: { sendMessage: Function; replyPermission: Function; replyQuestion: Function }
   sessionID: string; events: any; parts: any[]; session: Session; config: ConfigSlice
-  model?: string
+  // model 参数已移除：SDK 的 session.prompt() 不接受 model，正确做法是通过
+  // client.sendCommand({ command: "model", model: "openai/gpt-4o" }) 设置。
   onPermission?: Function; onQuestion?: Function; signal?: AbortSignal
 }) {
   const { client, sessionID, events, parts, session, config } = opts
@@ -92,7 +93,7 @@ export async function createPromptLoop(opts: {
   let aborted = false
 
   if (opts.signal) opts.signal.addEventListener("abort", () => { aborted = true })
-  await client.sendMessage(sessionID, { parts, model: opts.model }).catch(() => {})
+  await client.sendMessage(sessionID, { parts }).catch(() => {})
 
   const STREAM_TIMEOUT_MS = 5 * 60 * 1000
   const iterator = events.stream[Symbol.asyncIterator]()

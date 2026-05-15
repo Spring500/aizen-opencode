@@ -42,7 +42,7 @@ async function init() {
 
   if (config.initSession) {
     try {
-      const s = await client.getSession(config.initSession)
+      const s = (await client.getSession(config.initSession))!
       const session = createSession({ id: s.id, title: s.title ?? "" })
       console.log(formatConnected(s.id, s.title ?? ""))
       const { startREPL } = await import("./repl")
@@ -56,7 +56,7 @@ async function init() {
 
   if (config.newSession) {
     try {
-      const s = await client.createSession({ title: "新会话" })
+      const s = (await client.createSession({ title: "新会话" }))!
       const session = createSession({ id: s.id, title: s.title ?? "新会话" })
       console.log(formatConnected(s.id, s.title ?? "新会话"))
       const { startREPL } = await import("./repl")
@@ -79,7 +79,7 @@ async function init() {
   }
 
   try {
-    const s = await client.createSession({})
+    const s = (await client.createSession({}))!
     const session = createSession({ id: s.id, title: s.title ?? "新会话" })
     console.log(formatConnected(s.id, s.title ?? "新会话"))
     const { startREPL } = await import("./repl")

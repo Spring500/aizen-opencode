@@ -1,0 +1,311 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+</head>
+<body>
+<script type="text/x-markdown">
+# opencode-repl 测试缺口报告
+
+**日期**: 2026-05-15
+**来源**: 审计报告 §6（`docs/superpowers/2026-05-14-opencode-repl-audit.html`）
+**当前测试**: 147 pass, 0 fail
+
+---
+
+## 1. SSE 连接中断恢复
+
+| 项目 | 内容 |
+|------|------|
+| **涉及文件** | `src/commands/prompt.ts:createPromptLoop` |
+| **风险等级** | 🔴 高 |
+| **预估工时** | 2h |
+
+### 触发条件
+
+用户发送 prompt → serve 进程接收 → AI 开始执行 → 在此期间 SSE 连接静默断开。典型原因包括：网络闪断、serve 进程 OOM 被 kill、容器重启。
+
+### 当前保护措施
+
+M5 修复已添加 5 分钟超时保护：超时后 `createPromptLoop` 返回 `completed`。但超时触发后的恢复行为尚未定义——是自动重新建立 SSE 连接并恢复流？还是需要用户重新输入 prompt？
+
+```ts
+// src/commands/prompt.ts (简化)
+const timeout = setTimeout(() => {
+  resolve({ type: "completed", data: undefined })
+}, 5 * 60 * 1000)
+```
+
+问题在于 `resolve({ type: "completed" })` 之后，上层的 `sendToAI` 会误认为 AI 已完成并显示"完整结果已返回"，但实际 AI 可能还在服务端继续执行。
+
+### 为什么当前测试无法覆盖
+
+当前测试用 async generator 模拟完整事件流，一次 `yield` 到底：
+
+```ts
+// 典型测试构造
+async function* mockEvents() {
+  yield { type: "opencode:thinking", data: { ... } }
+  yield { type: "opencode:tool_use", data: { ... } }
+  yield { type: "opencode:completed", data: { ... } }
+}
+```
+
+无法模拟"生成到一半突然停止"的场景。模拟 SSE 中断需要在 generator 中间抛出 `NetworkError` 或在 `yield` 之间挂起超过 5 分钟。
+
+### 建议的测试方法
+
+1. **单元方式**：在 generator 中间 `throw` 一个模拟的网络错误，验证 `createPromptLoop` 返回的错误类型及其向上传播方式
+2. **端到端方式**：启动实际 serve 进程，发送 prompt 后 kill serve，观察 REPL 表现
+
+```ts
+// 建议的单元测试结构
+async function* brokenStream() {
+  yield { type: "opencode:thinking", data: {} }
+  throw new Error("NetworkError: connection reset")
+}
+
+const result = await createPromptLoop(brokenStream())
+expect(result.type).toBe("network_error")
+```
+
+---
+
+## 2. sendCommand + sendToAI 组合流程
+
+| 项目 | 内容 |
+|------|------|
+| **涉及文件** | `src/repl.ts:line handler 透传分支`, `src/commands/prompt.ts` |
+| **风险等级** | 🟡 中 |
+| **预估工时** | 1h |
+
+### 触发条件
+
+用户在 REPL 中输入未识别的 `/xxx` 命令 → `parseSlash` 返回 `local: false` → 透传到 `client.sendCommand({ command: "/xxx" })` → 服务端将指令转发给 AI → AI 回复以 SSE 事件流形式返回。
+
+完整链路：
+
+```
+用户输入 "/xxx"
+  → repl.ts: parseSlash("/xxx") → { local: false }
+  → client.sendCommand({ command: "/xxx" })  // 发送到 serve
+  → serve 解析并转发给 AI
+  → AI 生成回复
+  → SSE 事件流回到 createPromptLoop
+  → sendToAI({}) 接收并渲染
+```
+
+### 当前保护措施
+
+无。`sendCommand` 和 `sendToAI` 各自有独立单元测试，但两者的时序交互从未被验证。
+
+- `sendCommand` 测试：验证 HTTP POST 请求体正确
+- `sendToAI` 测试：验证事件流解析和渲染正确
+- **缺失**：`sendCommand` 发出后 AI 回复何时以 SSE 形式返回、返回的内容格式是否正确 —— 零覆盖
+
+### 为什么当前测试无法覆盖
+
+`createPromptLoop` 依赖真实的 SSE 事件流（来自 `client.chat.repl()` 或 `client.command.sendCommand()`）。当前测试中事件流总是被 mock generator 替代，无法验证"发送命令 A → 收到事件流 B"的因果对应关系。
+
+### 建议的测试方法
+
+集成测试：mock HTTP 层（`client.sendCommand` 和 `client.chat.repl` 返回的事件流），验证完整回路：
+
+```
+sendCommand({ command: "/unknown-cmd" })
+  → mock SSE 返回 "I don't understand that command"
+  → 验证 sendToAI 成功渲染该回复
+```
+
+---
+
+## 3. /switch 会话上下文完整切换
+
+| 项目 | 内容 |
+|------|------|
+| **涉及文件** | `src/repl.ts:handleLocalCommand "switch"`, `src/repl.ts:sendToAI` |
+| **风险等级** | 🟡 中 |
+| **预估工时** | 1h |
+
+### 触发条件
+
+用户在 session A 的上下文中执行 `/switch ses_B`，切换到 session B。预期行为：
+- `currentSession = createSession({ id: "ses_B" })`
+- 新 session 的 `approved` 状态被重置
+- 旧 session A 的 `files` 引用被丢弃
+
+### 当前保护措施
+
+`handleLocalCommand` 中处理 `/switch` 的分支逻辑已验证 pass。但有一个关键遗漏：
+
+```ts
+// src/repl.ts (简化)
+const events = client.chat.repl({ sessionID: ... })
+// events 在 repl.ts 顶层创建，订阅了 session A 的事件流
+
+// /switch 后
+currentSession = createSession({ id: "ses_B" })
+
+// 问题：events 仍订阅 session A 的 SSE 流
+// 切换后旧 session 的 SSE 事件是否还会流入？
+```
+
+### 零覆盖点
+
+切换 session 后，旧 session A 的 SSE 事件流没有被取消或取消订阅。如果 session A 上仍有未完成的 AI 回复，事件可能继续流入 `sendToAI`，污染新 session B 的对话输出。
+
+当前测试只验证了 `currentSession.id` 变为新值，没有验证：
+1. 旧 session 的事件流是否已停止
+2. 新 session 是否正确开始接收事件
+
+### 建议的测试方法
+
+集成测试：
+
+```
+// 场景
+1. 启动 session A 的 streaming
+2. 在 streaming 进行中执行 /switch ses_B
+3. 验证：
+   a. session A 的事件流已 abort
+   b. session B 可以正常发送 prompt 并收到回复
+   c. 没有 session A 的残留事件混入 session B 的输出
+```
+
+---
+
+## 4. Ctrl+C 在 streaming 中两次的退出路径
+
+| 项目 | 内容 |
+|------|------|
+| **涉及文件** | `src/repl.ts:rl.on("SIGINT")` |
+| **风险等级** | 🟢 低 |
+| **预估工时** | 0.5h |
+
+### 触发条件
+
+按 Spec 要求：
+
+> 第一次 Ctrl+C → abort 当前 AI 流，回到 idle 状态
+> 第二次 Ctrl+C → 退出 REPL 进程
+
+### 当前保护措施
+
+`rl.on("SIGINT")` 的处理逻辑：
+
+```ts
+rl.on("SIGINT", () => {
+  if (activeAbort) {
+    activeAbort.abort()
+    toIdle()
+    return
+  }
+  process.exit(0)
+})
+```
+
+第一次 `SIGINT` → `activeAbort.abort()` → 调用 `toIdle()`。如果没有 active streaming（idle 状态），直接 `process.exit(0)`。
+
+### 零覆盖点
+
+竞态条件：第一次 abort 后，如果 streaming 没有及时进入 idle（存在异步 gap），用户立即按第二次 Ctrl+C。此时 `activeAbort` 可能已被置空，但状态尚未完全切换为 idle。第二次 Ctrl+C 会走 `process.exit(0)` 分支，可能在 AI 流未完全清理干净的情况下退出，导致：
+- 未完成的 tool call 状态残留（如文件写入未 flush）
+- serve 端 AI 仍在执行但 REPL 已退出
+
+### 为什么当前测试无法覆盖
+
+当前测试使用同步 mock `rl.on("SIGINT", callback)` 直接调用 callback，没有模拟"第一次 abort 后异步 gap"的时序窗口。
+
+### 建议的测试方法
+
+用 mock signal + `setImmediate`/`Promise` 模拟竞态：
+
+```ts
+// 模拟两次快速 Ctrl+C
+const sigint = getSIGINTHandler()
+sigint()                           // 第一次：abort + toIdle()
+await Promise.resolve()            // 模拟微小异步 gap
+sigint()                           // 第二次：期望进入 idle 逻辑而非 process.exit
+expect(state).toBe("idle")
+```
+
+验证第二次 Ctrl+C 后进程**没有**调用 `process.exit`，而是正确回到 idle。
+
+---
+
+## 5. --thinking 参数完整传递链路
+
+| 项目 | 内容 |
+|------|------|
+| **涉及文件** | `src/index.ts` → `src/repl.ts` → `src/commands/prompt.ts:createPromptLoop` → `processEvent` |
+| **风险等级** | 🟢 低 |
+| **预估工时** | 0.5h |
+
+### 触发条件
+
+用户通过 CLI 参数 `--thinking` 启动 REPL，期望 AI 的 reasoning 事件在终端中被显示。
+
+### 链路分析
+
+```
+src/index.ts          parseArgs → config.thinking = true
+       ↓
+src/repl.ts           ConfigSlice 传入 REPL，存入 config
+       ↓
+src/commands/prompt.ts createPromptLoop 接收 ConfigSlice
+       ↓
+processEvent          if (config.thinking) { 渲染 reasoning }
+```
+
+### 当前保护措施
+
+每一层在隔离单元测试中都有验证：
+- `parseArgs` 测试：验证 `--thinking` flag 被解析为 `thinking: true`
+- `createPromptLoop` 测试：验证 `config.thinking` 参数被接收
+- `processEvent` 测试：独立验证 reasoning 事件的渲染逻辑
+
+### 零覆盖点
+
+四层之间的**传递链路没有端到端验证**。可能出现的问题：
+- `parseArgs` 解析正确，但传给 `ConfigSlice` 时字段名拼写错误（如 `thinkng`）
+- `ConfigSlice` 传给 `createPromptLoop` 时解构遗漏
+- 类型系统捕获不到运行时字段丢失（两端都用 `any` 或宽松类型）
+
+### 为什么当前测试无法覆盖
+
+每个单元测试独立 mock 了上游输入，无法检测"上游输出字段名 ≠ 下游输入字段名"的断裂。TypeScript 类型检查覆盖了类型层面，但不覆盖运行时可能的字段重命名或 misspelling。
+
+### 建议的测试方法
+
+轻量集成测试，从 CLI args 到 processEvent 走通全链路：
+
+```ts
+const args = parseArgs(["--thinking"])
+expect(args.thinking).toBe(true)
+
+const configSlice = buildConfigSlice(args)
+expect(configSlice.thinking).toBe(true)
+
+const loop = createPromptLoop(stream, configSlice)
+// 验证 reasoning 事件被正确处理
+```
+
+关键是确保四个对象（args → configSlice → createPromptLoop → processEvent）中的 `thinking` 字段**同名同义**，不依赖类型推断而是显式断言。
+
+---
+
+## 总结
+
+| # | 路径 | 风险等级 | 建议测试方式 | 预估工作量 |
+|---|------|---------|-------------|-----------|
+| 1 | SSE 中断恢复 | 🔴 高 | generator throw / 端到端 | 2h |
+| 2 | sendCommand + sendToAI 组合 | 🟡 中 | HTTP mock 集成测试 | 1h |
+| 3 | /switch 上下文切换 | 🟡 中 | 集成测试（事件流验证） | 1h |
+| 4 | Ctrl+C 双次退出 | 🟢 低 | 竞态模拟 | 0.5h |
+| 5 | --thinking 链路 | 🟢 低 | 轻量集成测试 | 0.5h |
+
+**总计**: 5 条路径，预估 **5 小时** 可完成全部补测。优先级建议：先补路径 1（SSE 中断恢复，高风险），再补路径 2 和 3（中风险），最后补路径 4 和 5（低风险快速验证）。
+</script>
+</body>
+</html>

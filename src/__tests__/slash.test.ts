@@ -68,9 +68,9 @@ describe("slash", () => {
   describe("passthrough commands", () => {
     test("/review", () => { const r = parseSlash("/review"); expect(r!.local).toBe(false); expect(r!.command).toBe("review") })
     test("/compact", () => { const r = parseSlash("/compact"); expect(r!.local).toBe(false) })
-    test("/release with args", () => { const r = parseSlash("/release minor"); expect(r!.local).toBe(false); expect(r!.command).toBe("release"); expect(r!.arguments).toBe("minor") })
+    test("/release with args", () => { const r = parseSlash("/release minor")!; expect(r.local).toBe(false); expect(r.command).toBe("release"); if (!r.local) expect(r.arguments).toBe("minor") })
     test("/unknown", () => { const r = parseSlash("/foobar baz"); expect(r!.local).toBe(false) })
-    test("bare /", () => { const r = parseSlash("/"); expect(r!.local).toBe(false); expect(r!.command).toBe(""); expect(r!.arguments).toBe("") })
+    test("bare /", () => { const r = parseSlash("/")!; expect(r.local).toBe(false); expect(r.command).toBe(""); if (!r.local) expect(r.arguments).toBe("") })
   })
 
   describe("non-slash", () => {

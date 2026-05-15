@@ -58,14 +58,10 @@ describe("client", () => {
         expect(opts?.method).toBe("POST")
         const body = JSON.parse(opts?.body as string)
         expect(body.parts).toBeDefined()
-        if (body.model) expect(body.model).toBe("openai/gpt-4o")
         return { json: async () => ({ ok: true }) }
       })
       const client = createClient({ baseUrl: "http://x", directory: "/d", fetch })
-      await client.sendMessage("ses_1", {
-        parts: [{ type: "text", text: "hello" }],
-        model: "openai/gpt-4o",
-      })
+      await client.sendMessage("ses_1", { parts: [{ type: "text", text: "hello" }] })
     })
 
     test("sendCommand", async () => {
@@ -87,6 +83,18 @@ describe("client", () => {
       })
       const client = createClient({ baseUrl: "http://x", directory: "/d", fetch })
       await client.sendCommand("ses_1", { command: "release", arguments: "minor" })
+    })
+
+    test("sendCommand with model", async () => {
+      const fetch = mockFetch(async (url, opts) => {
+        expect(url).toContain("/session/ses_1/command")
+        const body = JSON.parse(opts?.body as string)
+        expect(body.command).toBe("model")
+        expect(body.model).toBe("openai/gpt-4o")
+        return { json: async () => ({ ok: true }) }
+      })
+      const client = createClient({ baseUrl: "http://x", directory: "/d", fetch })
+      await client.sendCommand("ses_1", { command: "model", arguments: "openai/gpt-4o", model: "openai/gpt-4o" })
     })
 
     test("replyPermission once", async () => {
@@ -192,7 +200,7 @@ describe("client", () => {
       ;(netError as any).code = "ECONNREFUSED"
       const fetch = mockFetch(() => { throw netError })
       const client = createClient({ baseUrl: "http://x", directory: "/d", fetch })
-      const result = await client.listSessions()
+      const result = await client.listSessions({})
       expect(result).toEqual([])
     })
 
@@ -222,7 +230,7 @@ describe("client", () => {
   })
 })
 
-function mockFetch(handler: (url: string, opts?: RequestInit) => Promise<{ json: () => Promise<any>; ok?: boolean; status?: number; statusText?: string; headers?: Headers; text?: () => Promise<string> }>) {
+function mockFetch(handler: (url: string, opts?: RequestInit) => any) {
   return (async (url: string, opts?: RequestInit) => {
     const result = await handler(url, opts)
     const json = result.json ?? (async () => ({}))

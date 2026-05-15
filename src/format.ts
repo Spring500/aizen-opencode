@@ -22,6 +22,8 @@ function fitColumn(str: string, maxWidth: number): string {
   return truncated + " ".repeat(maxWidth - stringWidth(truncated))
 }
 
+// Spec §7.1 定义三参数 (role, agent, modelID)，但 role 信息已通过调用上下文隐含
+// （仅在 message.updated role==="assistant" 时调用），故保留两参数签名。
 export function formatAIHeader(agent?: string, modelID?: string): string {
   const a = agent ?? "?"
   const m = modelID ?? "?"

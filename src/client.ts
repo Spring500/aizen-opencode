@@ -27,17 +27,17 @@ export function createClient(config: ClientConfig) {
     createSession: (body: { title?: string }) =>
       sdk.session.create({ title: body.title, directory: config.directory }).then((r) => r.data),
 
-    sendMessage: (sid: string, body: { parts: any[]; model?: string; agent?: string }) =>
-      sdk.session.prompt({ sessionID: sid, parts: body.parts, model: body.model, agent: body.agent }),
+    sendMessage: (sid: string, body: { parts: any[] }) =>
+      sdk.session.prompt({ sessionID: sid, parts: body.parts }),
 
-    sendCommand: (sid: string, body: { command: string; arguments?: string }) =>
-      sdk.session.command({ sessionID: sid, command: body.command, arguments: body.arguments }),
+    sendCommand: (sid: string, body: { command: string; arguments?: string; model?: string; agent?: string }) =>
+      sdk.session.command({ sessionID: sid, command: body.command, arguments: body.arguments, model: body.model, agent: body.agent }),
 
     replyPermission: (rid: string, reply: string) =>
       sdk.permission.reply({ requestID: rid, reply: reply as "once" | "always" | "reject" }),
 
     replyQuestion: (qid: string, answer: string) =>
-      sdk.question.reply({ questionID: qid, answer }),
+      sdk.question.reply({ requestID: qid, answers: [[answer]] }),
 
     abortSession: (sid: string) =>
       sdk.session.abort({ sessionID: sid }),
