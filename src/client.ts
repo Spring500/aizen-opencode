@@ -1,3 +1,5 @@
+import { createOpencodeClient as createSDKClient } from "@opencode-ai/sdk/v2"
+
 export type ClientConfig = {
   baseUrl: string
   directory: string
@@ -7,85 +9,45 @@ export type ClientConfig = {
 export type SSEEvent = Record<string, any>
 
 export function createClient(config: ClientConfig) {
-  const f = config.fetch ?? globalThis.fetch.bind(globalThis)
-
-  function url(path: string, params?: Record<string, string>) {
-    let u = `${config.baseUrl}${path}`
-    if (params) {
-      const qs = new URLSearchParams(params).toString()
-      if (qs) u += `?${qs}`
-    }
-    return u
-  }
-
-  async function get<T>(path: string, params?: Record<string, string>): Promise<T> {
-    const res = await f(url(path, params))
-    if (!res.ok) throw new Error(`${res.status} ${res.statusText}`)
-    return res.json()
-  }
-
-  async function post<T>(path: string, body?: Record<string, unknown>): Promise<T> {
-    const res = await f(url(path), {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: body ? JSON.stringify(body) : undefined,
-    })
-    if (!res.ok) throw new Error(`${res.status} ${res.statusText}`)
-    return res.json()
-  }
+  const sdk = createSDKClient({
+    baseUrl: config.baseUrl,
+    directory: config.directory,
+    fetch: config.fetch,
+  })
 
   return {
     baseUrl: config.baseUrl,
 
     listSessions: (params: { roots?: boolean; limit?: number }) =>
-      get<any[]>(`/session`, {
-        directory: config.directory,
-        ...params.roots !== undefined ? { roots: String(params.roots) } : {},
-        ...params.limit !== undefined ? { limit: String(params.limit) } : {},
-      }),
+      sdk.session.list(params).then((r) => r.data ?? []),
 
     getSession: (id: string) =>
-      get<any>(`/session/${id}`),
+      sdk.session.get({ sessionID: id }).then((r) => r.data),
 
     createSession: (body: { title?: string }) =>
-      post<any>("/session", body),
+      sdk.session.create({ title: body.title }).then((r) => r.data),
 
-    sendMessage: (sid: string, body: { parts: any[]; model?: string }) =>
-      post<any>(`/session/${sid}/message`, body as any),
+    sendMessage: (sid: string, body: { parts: any[]; model?: string; agent?: string }) =>
+      sdk.session.prompt({ sessionID: sid, parts: body.parts, model: body.model, agent: body.agent }),
 
     sendCommand: (sid: string, body: { command: string; arguments?: string }) =>
-      post<any>(`/session/${sid}/command`, body),
+      sdk.session.command({ sessionID: sid, command: body.command, arguments: body.arguments }),
 
     replyPermission: (rid: string, reply: string) =>
-      post<any>(`/permission/${rid}/reply`, { reply }),
+      sdk.permission.reply({ requestID: rid, reply: reply as "once" | "always" | "reject" }),
 
     replyQuestion: (qid: string, answer: string) =>
-      post<any>(`/question/${qid}/reply`, { answer }),
+      sdk.question.reply({ questionID: qid, answer }),
 
     abortSession: (sid: string) =>
-      post<any>(`/session/${sid}/abort`),
+      sdk.session.abort({ sessionID: sid }),
 
     forkSession: (sid: string, messageID: string) =>
-      post<any>(`/session/${sid}/fork`, { messageID }),
+      sdk.session.fork({ sessionID: sid, messageID }),
 
     getMessages: (sid: string, limit: number) =>
-      get<any[]>(`/session/${sid}/message`, { limit: String(limit) }),
+      sdk.session.messages({ sessionID: sid, limit }),
 
-    subscribe: (): { stream: AsyncIterable<SSEEvent> } => {
-      let done = false
-      return {
-        stream: {
-          [Symbol.asyncIterator]() {
-            return {
-              async next() {
-                if (done) return { done: true, value: undefined }
-                done = true
-                return { done: true, value: undefined }
-              },
-            }
-          },
-        },
-      }
-    },
+    subscribe: () => ({ stream: sdk.event.subscribe() }),
   }
 }
