@@ -60,3 +60,81 @@ export function formatFiles(files: string[]): string {
   if (files.length === 0) return pc.dim("无附件")
   return files.map((f, i) => `  ${pc.dim(`${i + 1}.`)} ${f}`).join("\n")
 }
+
+export function formatTextDelta(text: string): string {
+  return text
+}
+
+export function formatToolCall(
+  tool: string,
+  title: string,
+  state?: string,
+  output?: string,
+): string {
+  const label = `  ${pc.cyan("⚙")} ${pc.cyan(tool)} · ${title}`
+  if (!state) return label
+  if (state === "running") return label
+  if (state === "completed") {
+    const done = `${label}  ${pc.green("✓")}`
+    if (!output?.trim()) return done
+    return `${done}\n${pc.dim(output.split("\n").map(l => `    ${l}`).join("\n"))}`
+  }
+  if (state === "error") {
+    const err = `${label}  ${pc.red("✗")}`
+    if (!output?.trim()) return err
+    return `${err}\n${pc.red(output.split("\n").map(l => `    ${l}`).join("\n"))}`
+  }
+  return label
+}
+
+export function formatReasoning(text: string, thinking: boolean): string {
+  if (!thinking) return ""
+  return pc.dim(pc.italic(`  · ${text}`))
+}
+
+export function formatQuestionPrompt(question: string): string {
+  return `\n  ${pc.yellow("?")} ${question}\n  ${pc.dim("> ")}`
+}
+
+export function formatAbortMessage(): string {
+  return pc.yellow("已中断")
+}
+
+export function formatDisconnectMessage(): string {
+  return `\n  ${pc.yellow("⚠")} ${pc.dim("连接中断")}\n`
+}
+
+export function formatDisconnectPermMessage(): string {
+  return `\n  ${pc.yellow("⚠")} ${pc.dim("连接中断，权限请求可能已被拒绝")}\n`
+}
+
+export function formatHistory(
+  messages: { role: string; text: string }[],
+  maxCount = 10,
+): string {
+  if (messages.length === 0) return pc.dim("无历史")
+  const items = messages.slice(-maxCount)
+  const header = formatSeparator(`最近 ${items.length} 条消息`)
+  const lines = items.map((msg) => {
+    const prefix = msg.role === "user" ? pc.cyan("You:  ") : pc.green("AI:   ")
+    let text = msg.text
+    if (text.length > 120) text = text.slice(0, 117) + "..."
+    return prefix + text
+  })
+  return header + "\n" + lines.join("\n\n") + "\n" + formatSeparator()
+}
+
+export function formatSessions(
+  sessions: { id: string; title: string; updated: string }[],
+): string {
+  if (sessions.length === 0) return pc.dim("无 session")
+  const maxId = 20
+  const maxTitle = 25
+  const trunc = (s: string, len: number) => s.length > len ? s.slice(0, len - 3) + "..." : s
+  const header = `${"Session ID".padEnd(maxId)}  ${"Title".padEnd(maxTitle)}  Updated`
+  const sep = "─".repeat(header.length)
+  const rows = sessions.map((s) => {
+    return `${pc.dim(trunc(s.id, maxId).padEnd(maxId))}  ${trunc(s.title, maxTitle).padEnd(maxTitle)}  ${s.updated}`
+  })
+  return [header, pc.dim(sep), ...rows].join("\n")
+}
