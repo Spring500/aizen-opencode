@@ -1,4 +1,5 @@
 import * as readline from "node:readline"
+import { select } from "@inquirer/prompts"
 import { type Config, type Session, createSession } from "./state"
 import { parseSlash } from "./commands/slash"
 import { createPromptLoop } from "./commands/prompt"
@@ -73,6 +74,22 @@ export async function startREPL(config: Config, session: Session, client: any) {
     rl.prompt()
   }
 
+  async function pickSession(client: any): Promise<string | null> {
+    try {
+      const list = await client.listSessions({ roots: true })
+      if (list.length === 0) { print("无可用 session"); return null }
+      const chosen = await select({
+        message: "选择会话",
+        choices: list.map((s: any) => ({
+          name: `${s.title ?? "无标题"}`,
+          value: s.id,
+          description: `${s.id.slice(-8)} · ${new Date(s.time?.updated ?? Date.now()).toLocaleString()}`,
+        })),
+      })
+      return chosen as string
+    } catch { return null }
+  }
+
   async function handleLocalCommand(command: string, args: string) {
     switch (command) {
       case "quit": case "exit": print("再见"); process.exit(0)
@@ -84,7 +101,11 @@ export async function startREPL(config: Config, session: Session, client: any) {
         break
       }
       case "switch":
-        if (!args) { print("用法: /switch <sessionID>"); break }
+        if (!args) {
+          const id = await pickSession(client)
+          if (!id) break
+          args = id
+        }
         currentSession = createSession({ id: args, title: "已切换" })
         print(`已切换到 ${args}`)
         break
@@ -96,7 +117,15 @@ export async function startREPL(config: Config, session: Session, client: any) {
         break
       }
       case "fork": {
-        const res = await client.forkSession(currentSession.id, args || "")
+        if (!args) {
+          const id = await pickSession(client)
+          if (!id) break
+          const res = await client.forkSession(id, "")
+          currentSession = createSession({ id: res.id, title: res.title ?? "fork" })
+          print(`已 fork: ${res.id}`)
+          break
+        }
+        const res = await client.forkSession(currentSession.id, args)
         currentSession = createSession({ id: res.id, title: res.title ?? "fork" })
         print(`已 fork: ${res.id}`)
         break
