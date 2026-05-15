@@ -162,15 +162,16 @@ describe("client", () => {
       await client.getMessages("ses_1", 10)
     })
 
-    test("subscribe returns async iterable", () => {
+    test("subscribe returns { stream } async iterable", () => {
       const client = createClient({
         baseUrl: "http://x",
         directory: "/d",
         fetch: mockFetch(() => ({ ok: true })),
       })
-      const iter = client.subscribe()
-      expect(iter).toBeDefined()
-      expect(typeof iter[Symbol.asyncIterator]).toBe("function")
+      const result = client.subscribe()
+      expect(result).toBeDefined()
+      expect(result.stream).toBeDefined()
+      expect(typeof result.stream[Symbol.asyncIterator]).toBe("function")
     })
   })
 

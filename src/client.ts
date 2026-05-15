@@ -71,17 +71,19 @@ export function createClient(config: ClientConfig) {
     getMessages: (sid: string, limit: number) =>
       get<any[]>(`/session/${sid}/message`, { limit: String(limit) }),
 
-    subscribe: (): AsyncIterable<SSEEvent> => {
+    subscribe: (): { stream: AsyncIterable<SSEEvent> } => {
       let done = false
       return {
-        [Symbol.asyncIterator]() {
-          return {
-            async next() {
-              if (done) return { done: true, value: undefined }
-              done = true
-              return { done: true, value: undefined }
-            },
-          }
+        stream: {
+          [Symbol.asyncIterator]() {
+            return {
+              async next() {
+                if (done) return { done: true, value: undefined }
+                done = true
+                return { done: true, value: undefined }
+              },
+            }
+          },
         },
       }
     },
