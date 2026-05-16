@@ -17,7 +17,7 @@
 
 ### 环境要求
 
-- [Bun](https://bun.sh) >= 1.0
+- [Node.js](https://nodejs.org) >= 18（附带 npm）
 - 运行中的 opencode 服务（默认 `http://localhost:4096`）
 
 ### 安装
@@ -25,13 +25,13 @@
 ```bash
 git clone <repo-url>
 cd aizen-opencode
-bun install
+npm install
 ```
 
 ### 启动
 
 ```bash
-bun run dev
+npm run dev
 ```
 
 ## 使用文档

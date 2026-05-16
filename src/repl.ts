@@ -117,29 +117,41 @@ export async function startREPL(config: Config, session: Session, client: any) {
           if (!id) break
           args = id
         }
-        const sessionInfo = await client.getSession(args)
-        currentSession = createSession({ id: args, title: sessionInfo.title ?? args })
-        print(`已切换到 ${args}`)
+        try {
+          const sessionInfo = await client.getSession(args)
+          currentSession = createSession({ id: args, title: sessionInfo.title ?? args })
+          print(`已切换到 ${args}`)
+        } catch (err) {
+          print(`切换失败: ${(err as Error).message}`)
+        }
         break
       case "new": {
         const title = args || undefined
-        const res = await client.createSession({ title })
-        currentSession = createSession({ id: res.id, title: res.title ?? "新会话" })
-        print(`已创建新会话: ${res.id}`)
+        try {
+          const res = await client.createSession({ title })
+          currentSession = createSession({ id: res.id, title: res.title ?? "新会话" })
+          print(`已创建新会话: ${res.id}`)
+        } catch (err) {
+          print(`创建失败: ${(err as Error).message}`)
+        }
         break
       }
       case "fork": {
-        if (!args) {
-          const id = await pickSession(client)
-          if (!id) break
-          const res = await client.forkSession(id)
+        try {
+          if (!args) {
+            const id = await pickSession(client)
+            if (!id) break
+            const res = await client.forkSession(id)
+            currentSession = createSession({ id: res.id, title: res.title ?? "fork" })
+            print(`已 fork: ${res.id}`)
+            break
+          }
+          const res = await client.forkSession(currentSession.id, args)
           currentSession = createSession({ id: res.id, title: res.title ?? "fork" })
           print(`已 fork: ${res.id}`)
-          break
+        } catch (err) {
+          print(`fork 失败: ${(err as Error).message}`)
         }
-        const res = await client.forkSession(currentSession.id, args)
-        currentSession = createSession({ id: res.id, title: res.title ?? "fork" })
-        print(`已 fork: ${res.id}`)
         break
       }
       case "history": {

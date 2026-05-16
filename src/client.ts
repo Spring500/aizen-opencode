@@ -8,6 +8,12 @@ export type ClientConfig = {
 
 export type SSEEvent = Record<string, any>
 
+function unwrap<T>(r: { data?: T; error?: any }): T {
+  if (r.error) throw new Error(typeof r.error === "string" ? r.error : r.error?.message ?? JSON.stringify(r.error))
+  if (r.data === undefined || r.data === null) throw new Error("服务器返回空数据")
+  return r.data
+}
+
 export function createClient(config: ClientConfig) {
   const sdk = createSDKClient({
     baseUrl: config.baseUrl,
@@ -22,10 +28,10 @@ export function createClient(config: ClientConfig) {
       sdk.session.list(params).then((r) => r.data ?? []),
 
     getSession: (id: string) =>
-      sdk.session.get({ sessionID: id }).then((r) => r.data),
+      sdk.session.get({ sessionID: id }).then((r) => unwrap(r)),
 
     createSession: (body: { title?: string }) =>
-      sdk.session.create({ title: body.title, directory: config.directory }).then((r) => r.data),
+      sdk.session.create({ title: body.title, directory: config.directory }).then((r) => unwrap(r)),
 
     sendMessage: (sid: string, body: { parts: any[] }) =>
       sdk.session.prompt({ sessionID: sid, parts: body.parts }),
@@ -43,10 +49,10 @@ export function createClient(config: ClientConfig) {
       sdk.session.abort({ sessionID: sid }),
 
     forkSession: (sid: string, messageID?: string) =>
-      sdk.session.fork({ sessionID: sid, ...(messageID ? { messageID } : {}) }),
+      sdk.session.fork({ sessionID: sid, ...(messageID ? { messageID } : {}) }).then((r) => unwrap(r)),
 
     getMessages: (sid: string, limit: number) =>
-      sdk.session.messages({ sessionID: sid, limit }),
+      sdk.session.messages({ sessionID: sid, limit }).then((r) => r.data ?? []),
 
     subscribe: () => ({ stream: sdk.event.subscribe() }),
   }
