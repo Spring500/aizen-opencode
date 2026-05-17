@@ -38,7 +38,80 @@ export async function startREPL(config: Config, session: Session, client: any) {
     return [[], line]
   }
 
-  const rl = readline.createInterface({ input: process.stdin, output: process.stdout, prompt: formatPrompt(), completer })
+  // ========================================================================
+  // readline 输入事件处理 — 提取为独立函数以支持重建 readline 接口
+  //
+  // @inquirer/prompts 的 select() 会接管 stdin 并设置 raw mode，
+  // 返回后原 readline 实例无法通过 pause/resume 恢复，必须 close + 重建。
+  // 事件处理器提取出来，重建时重新挂载即可。
+  // ========================================================================
+
+  // 主输入处理器：处理所有用户输入（消息、命令、多行模式）
+  async function onLineInput(line: string) {
+    const trimmed = line.trimEnd()
+
+    if (multiline.active) {
+      if (trimmed === ".") {
+        const text = multiline.buffer.join("\n")
+        multiline = { active: false, buffer: [] }
+        if (text.trim()) await sendToAI({ message: text })
+        else toIdle()
+        return
+      }
+      multiline.buffer.push(line)
+      rl.prompt()
+      return
+    }
+
+    if (trimmed.endsWith("\\") && line.endsWith("\\")) {
+      multiline = { active: true, buffer: [trimmed.slice(0, -1)] }
+      rl.prompt()
+      return
+    }
+
+    if (trimmed.startsWith("/")) {
+      const cmd = parseSlash(trimmed, localCommandNames)
+      if (cmd === null) { toIdle(); return }
+      if (cmd.local) { await handleLocalCommand(cmd.command, cmd.args); toIdle(); return }
+      await client.sendCommand(currentSession.id, { command: cmd.command, arguments: cmd.arguments })
+      await sendToAI({})
+      return
+    }
+
+    if (!trimmed) { toIdle(); return }
+    await sendToAI({ message: trimmed })
+  }
+
+  // Ctrl+C 处理器
+  function onSIGINT() {
+    if (activeAbort) {
+      activeAbort.abort()
+      activeAbort = null
+      print(formatAbortMessage())
+      multiline = { active: false, buffer: [] }
+      toIdle()
+      return
+    }
+    state = ReplState.Exiting
+    print("再见")
+    process.exit(0)
+  }
+
+  // 创建 readline 接口并挂载事件处理器
+  function createReadline() {
+    const rli = readline.createInterface({ input: process.stdin, output: process.stdout, prompt: formatPrompt(), completer })
+    rli.on("line", onLineInput)
+    rli.on("SIGINT", onSIGINT)
+    return rli
+  }
+
+  // 销毁当前 readline 实例并重建（用于 @inquirer/prompts 之后恢复 stdin 输入）
+  function recreateReadline() {
+    rl.close()
+    rl = createReadline()
+  }
+
+  let rl = createReadline()
 
   function setPrompt() {
     rl.setPrompt(multiline.active ? "> " : formatPrompt())
@@ -112,17 +185,25 @@ export async function startREPL(config: Config, session: Session, client: any) {
   async function pickSession(client: any): Promise<string | null> {
     const prev = state
     state = ReplState.SessionPick
-    const list = await client.listSessions({ roots: true, directory: config.directory })
-    if (list.length === 0) { state = prev; print("无可用 session"); return null }
-    const chosen = await select({
-      message: "选择会话",
-      choices: list.map((s: any) => ({
-        name: `${s.title ?? "无标题"}`,
-        value: s.id,
-        description: `${s.id.slice(-8)} · ${new Date(s.time?.updated ?? Date.now()).toLocaleString()}`,
-      })),
-    })
-    return chosen as string
+
+    try {
+      const list = await client.listSessions({ roots: true, directory: config.directory })
+      if (list.length === 0) { print("无可用 session"); return null }
+      const chosen = await select({
+        message: "选择会话",
+        choices: list.map((s: any) => ({
+          name: `${s.title ?? "无标题"}`,
+          value: s.id,
+          description: `${s.id.slice(-8)} · ${new Date(s.time?.updated ?? Date.now()).toLocaleString()}`,
+        })),
+      })
+      return chosen as string
+    } finally {
+      state = prev
+      // @inquirer/prompts 的 select() 会接管 stdin raw mode，
+      // 返回后原 readline 实例已无法恢复，必须 close + 重建
+      recreateReadline()
+    }
   }
 
   // ============================================================================
@@ -291,53 +372,4 @@ export async function startREPL(config: Config, session: Session, client: any) {
     const def = commandMap.get(command)
     if (def) await def.handler(args)
   }
-
-  rl.on("line", async (line: string) => {
-    const trimmed = line.trimEnd()
-
-    if (multiline.active) {
-      if (trimmed === ".") {
-        const text = multiline.buffer.join("\n")
-        multiline = { active: false, buffer: [] }
-        if (text.trim()) await sendToAI({ message: text })
-        else toIdle()
-        return
-      }
-      multiline.buffer.push(line)
-      rl.prompt()
-      return
-    }
-
-    if (trimmed.endsWith("\\") && line.endsWith("\\")) {
-      multiline = { active: true, buffer: [trimmed.slice(0, -1)] }
-      rl.prompt()
-      return
-    }
-
-    if (trimmed.startsWith("/")) {
-      const cmd = parseSlash(trimmed, localCommandNames)
-      if (cmd === null) { toIdle(); return }
-      if (cmd.local) { await handleLocalCommand(cmd.command, cmd.args); toIdle(); return }
-      await client.sendCommand(currentSession.id, { command: cmd.command, arguments: cmd.arguments })
-      await sendToAI({})
-      return
-    }
-
-    if (!trimmed) { toIdle(); return }
-    await sendToAI({ message: trimmed })
-  })
-
-  rl.on("SIGINT", () => {
-    if (activeAbort) {
-      activeAbort.abort()
-      activeAbort = null
-      print(formatAbortMessage())
-      multiline = { active: false, buffer: [] }
-      toIdle()
-      return
-    }
-    state = ReplState.Exiting
-    print("再见")
-    process.exit(0)
-  })
 }
