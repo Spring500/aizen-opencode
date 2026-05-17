@@ -250,11 +250,11 @@ describe("formatHistory", () => {
     expect(out).toContain("AI:")
     expect(out).toContain("hi")
   })
-  test("long message truncation", () => {
-    const msg = "a".repeat(130)
+  test("long message NOT truncated", () => {
+    const msg = "a".repeat(200)
     const out = formatHistory([{ role: "user", text: msg }])
-    expect(strip(out)).toContain("...")
-    expect(strip(out).length).toBeLessThan(300)
+    expect(strip(out)).not.toContain("...")
+    expect(strip(out)).toContain(msg)
   })
   test("multiline preserved", () => {
     const out = formatHistory([{ role: "user", text: "line1\nline2" }])

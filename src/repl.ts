@@ -9,6 +9,14 @@ import {
   formatConnected, formatDisconnectMessage, formatDisconnectPermMessage,
 } from "./format"
 
+export function extractMessageText(m: any): { role: string; text: string } {
+  const textPart = (m.parts ?? []).find((p: any) => p.type === "text" && typeof p.text === "string")
+  return {
+    role: m.info?.role ?? m.role,
+    text: textPart?.text ?? ((m.parts ?? []).map((p: any) => p.text).filter(Boolean).join(" ") || "(no text)"),
+  }
+}
+
 export async function startREPL(config: Config, session: Session, client: any) {
   let currentSession = session
   let multiline: { active: boolean; buffer: string[] } = { active: false, buffer: [] }
@@ -307,13 +315,7 @@ export async function startREPL(config: Config, session: Session, client: any) {
         async handler(args) {
           const limit = args ? parseInt(args) : 10
           const msgs = await client.getMessages(currentSession.id, limit)
-          const items = msgs.map((m: any) => {
-            const textPart = (m.parts ?? []).find((p: any) => p.type === "text" && typeof p.text === "string")
-            return {
-              role: m.info?.role ?? m.role,
-              text: textPart?.text ?? ((m.parts ?? []).map((p: any) => p.text).filter(Boolean).join(" ") || "(no text)"),
-            }
-          })
+          const items = msgs.map(extractMessageText)
           print(formatHistory(items, limit))
         },
       },
