@@ -307,10 +307,13 @@ export async function startREPL(config: Config, session: Session, client: any) {
         async handler(args) {
           const limit = args ? parseInt(args) : 10
           const msgs = await client.getMessages(currentSession.id, limit)
-          const items = msgs.map((m: any) => ({
-            role: m.info?.role ?? m.role,
-            text: typeof m.parts?.[0]?.text === "string" ? m.parts[0].text : JSON.stringify(m.message ?? ""),
-          }))
+          const items = msgs.map((m: any) => {
+            const textPart = (m.parts ?? []).find((p: any) => p.type === "text" && typeof p.text === "string")
+            return {
+              role: m.info?.role ?? m.role,
+              text: textPart?.text ?? ((m.parts ?? []).map((p: any) => p.text).filter(Boolean).join(" ") || "(no text)"),
+            }
+          })
           print(formatHistory(items, limit))
         },
       },

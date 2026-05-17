@@ -142,9 +142,7 @@ export function formatHistory(
   const header = formatSeparator(`最近 ${items.length} 条消息`)
   const lines = items.map((msg) => {
     const prefix = msg.role === "user" ? pc.cyan("You:  ") : pc.green("AI:   ")
-    let text = msg.text
-    if (stringWidth(text) > 120) text = truncateByWidth(text, 117) + "..."
-    return prefix + text
+    return prefix + msg.text
   })
   return header + "\n" + lines.join("\n\n") + "\n" + formatSeparator()
 }
