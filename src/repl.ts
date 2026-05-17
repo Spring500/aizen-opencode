@@ -7,6 +7,7 @@ import {
   formatPrompt, formatSeparator, formatHistory, formatSessions, formatInfo,
   formatFiles, formatPermissionPrompt, formatQuestionPrompt, formatAbortMessage,
   formatConnected, formatDisconnectMessage, formatDisconnectPermMessage,
+  setTerminalTitle,
 } from "./format"
 
 export function extractMessageContent(m: any): { role: string; lines: Array<{ type: "text" | "tool" | "tool-output"; content: string }> } {
@@ -286,6 +287,8 @@ export async function startREPL(config: Config, session: Session, client: any) {
             }
             const sessionInfo = await client.getSession(id)
             currentSession = createSession({ id, title: sessionInfo.title ?? id })
+            // 切换会话后更新终端标题为新会话名
+            setTerminalTitle(sessionInfo.title || id)
             print(`已切换到 ${id}`)
           } catch (err) {
             const e = err as Error
@@ -301,6 +304,8 @@ export async function startREPL(config: Config, session: Session, client: any) {
           try {
             const res = await client.createSession({ title: title || undefined })
             currentSession = createSession({ id: res.id, title: res.title ?? "新会话" })
+            // 新建会话后更新终端标题为新会话名
+            setTerminalTitle(res.title || "新会话")
             print(`已创建新会话: ${res.id}`)
           } catch (err) {
             const e = err as Error
@@ -319,11 +324,15 @@ export async function startREPL(config: Config, session: Session, client: any) {
               if (!picked) return
               const res = await client.forkSession(picked)
               currentSession = createSession({ id: res.id, title: res.title ?? "fork" })
+              // fork 会话后更新终端标题为新会话名
+              setTerminalTitle(res.title || "fork")
               print(`已 fork: ${res.id}`)
               return
             }
             const res = await client.forkSession(currentSession.id, args)
             currentSession = createSession({ id: res.id, title: res.title ?? "fork" })
+            // fork 会话后更新终端标题为新会话名
+            setTerminalTitle(res.title || "fork")
             print(`已 fork: ${res.id}`)
           } catch (err) {
             const e = err as Error

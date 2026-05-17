@@ -3,7 +3,7 @@ import { createConfig, createSession } from "./state"
 import { createClient } from "./client"
 import {
   formatConnecting, formatConnected, formatConnectionError,
-  formatSessionNotFound, formatSessionCreateError,
+  formatSessionNotFound, formatSessionCreateError, setTerminalTitle,
 } from "./format"
 
 const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf-8"))
@@ -46,6 +46,8 @@ async function init() {
       const s = await client.getSession(config.initSession)
       const session = createSession({ id: s.id, title: s.title ?? "" })
       console.log(formatConnected(s.id, s.title ?? ""))
+      // 启动时将终端标题设置为当前会话名
+      setTerminalTitle(s.title || s.id)
       const { startREPL } = await import("./repl")
       await startREPL(config, session, client)
     } catch (err) {
@@ -62,6 +64,8 @@ async function init() {
       const s = await client.createSession({ title: "新会话" })
       const session = createSession({ id: s.id, title: s.title ?? "新会话" })
       console.log(formatConnected(s.id, s.title ?? "新会话"))
+      // 新建会话时将终端标题设置为会话名
+      setTerminalTitle(s.title || "新会话")
       const { startREPL } = await import("./repl")
       await startREPL(config, session, client)
     } catch (err) {
@@ -78,6 +82,8 @@ async function init() {
     const s = list[0]
     const session = createSession({ id: s.id, title: s.title ?? "" })
     console.log(formatConnected(s.id, s.title ?? ""))
+    // 恢复已有会话时将终端标题设置为会话名
+    setTerminalTitle(s.title || s.id)
     const { startREPL } = await import("./repl")
     await startREPL(config, session, client)
     return
@@ -87,6 +93,8 @@ async function init() {
     const s = await client.createSession({})
     const session = createSession({ id: s.id, title: s.title ?? "新会话" })
     console.log(formatConnected(s.id, s.title ?? "新会话"))
+    // 回退创建会话时将终端标题设置为会话名
+    setTerminalTitle(s.title || "新会话")
     const { startREPL } = await import("./repl")
     await startREPL(config, session, client)
   } catch (err) {

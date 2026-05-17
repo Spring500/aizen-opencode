@@ -125,6 +125,16 @@ export function formatAbortMessage(): string {
   return pc.yellow("已中断")
 }
 
+/**
+ * 设置终端标题 — 通过 ANSI OSC (Operating System Command) 转义序列
+ * 格式: ESC ] 0 ; <title> BEL
+ * 几乎所有现代终端（Windows Terminal、iTerm2、GNOME Terminal 等）均支持
+ * 在项目启动、切换/新建/fork 会话时调用，使终端标签页显示当前会话名
+ */
+export function setTerminalTitle(title: string) {
+  process.stdout.write(`\x1b]0;${title}\x07`)
+}
+
 export function formatDisconnectMessage(): string {
   return `\n  ${pc.yellow("⚠")} ${pc.dim("连接中断")}\n`
 }
