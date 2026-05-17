@@ -1,7 +1,31 @@
-import { describe, test, expect } from "bun:test"
+// ============================================================================
+// client.test.ts
+// ============================================================================
+//
+// 这个文件测试 HTTP 客户端的行为——也就是 REPL 是怎么和服务端通信的。
+// 覆盖了三块：客户端能调哪些接口、每个接口发出的 HTTP 请求长什么样、
+// 以及网络或服务端出错时客户端怎么反应。
+//
+// 具体来说：
+//   - 确认客户端对象上有 11 个方法（列举会话、获取/创建会话、发消息、
+//     发命令、回复权限、回复问题、中断、派生、取历史、订阅事件流）
+//   - 模拟 HTTP 请求，检查 URL 路径、HTTP 方法、query 参数、请求体
+//     是否和预期一致
+//   - 网络断开时请求不抛异常，静默返回空结果
+//   - 服务端返回 404 或 500 时抛出一个带中文错误信息的异常
+//   - 空目录参数不导致崩溃
+//
+// 测试用了一个假的 fetch 来截获 SDK 发出的请求，然后把 Request 对象
+// 拆成 { url, method, body, headers } 传给每个用例去断言。
+//
+// ============================================================================
+// ============================================================================
+
+import { describe, test, expect } from "vitest"
 import { createClient } from "../client"
 
 describe("client", () => {
+  // createClient() 工厂函数：验证客户端实例构造，包括 baseUrl 注入
   describe("createClient", () => {
     test("returns client instance", () => {
       const client = createClient({ baseUrl: "http://localhost:4096", directory: "/tmp" })
@@ -10,6 +34,8 @@ describe("client", () => {
     })
   })
 
+  // API wrappers：验证每个 API 方法构造的 HTTP 请求是否正确
+  // （URL 路径、HTTP method、query params、body、特殊参数如 model/arguments）
   describe("API wrappers", () => {
     test("listSessions builds correct params", async () => {
       const fetch = mockFetch((url) => {
@@ -182,6 +208,7 @@ describe("client", () => {
     })
   })
 
+  // 错误传播：验证网络错误静默处理、HTTP 错误正确抛出
   describe("error propagation", () => {
     test("client created with valid config", () => {
       const client = createClient({ baseUrl: "http://localhost:4096", directory: "/tmp" })
@@ -212,8 +239,7 @@ describe("client", () => {
         json: async () => ({ message: "session not found" }),
       }))
       const client = createClient({ baseUrl: "http://x", directory: "/d", fetch })
-      const result = await client.getSession("ses_missing")
-      expect(result).toBeUndefined()
+      await expect(client.getSession("ses_missing")).rejects.toThrow("404")
     })
 
     test("createSession surfaces HTTP 500", async () => {
@@ -224,23 +250,29 @@ describe("client", () => {
         json: async () => ({ message: "server error" }),
       }))
       const client = createClient({ baseUrl: "http://x", directory: "/d", fetch })
-      const result = await client.createSession({ title: "test" })
-      expect(result).toBeUndefined()
+      await expect(client.createSession({ title: "test" })).rejects.toThrow("500")
     })
   })
 })
 
-function mockFetch(handler: (url: string, opts?: RequestInit) => any) {
-  return (async (url: string, opts?: RequestInit) => {
-    const result = await handler(url, opts)
-    const json = result.json ?? (async () => ({}))
-    return {
-      ok: result.ok ?? true,
-      status: result.status ?? 200,
-      statusText: result.statusText ?? "OK",
-      json,
-      text: result.text ?? (async () => JSON.stringify(await json())),
-      headers: result.headers ?? new Headers(),
+// mockFetch：创建一个模拟的 fetch 函数。
+// 从 Request 对象中提取 url / method / body / headers 传给 handler，
+// 然后将 handler 的返回值包装为真实的 Response 对象返回给 SDK。
+function mockFetch(handler: (url: string, opts?: { method?: string; body?: any; headers?: Headers }) => any) {
+  return (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const req = input instanceof Request ? input : new Request(input, init)
+    const url = req.url
+    const opts = {
+      method: req.method,
+      body: await req.text().catch(() => req.body),
+      headers: req.headers,
     }
+    const raw = await handler(url, opts)
+    const body = typeof raw?.json === "function" ? await raw.json() : raw
+    return new Response(JSON.stringify(body), {
+      status: raw?.status ?? 200,
+      statusText: raw?.statusText ?? "OK",
+      headers: raw?.headers ?? { "Content-Type": "application/json" },
+    })
   }) as any
 }

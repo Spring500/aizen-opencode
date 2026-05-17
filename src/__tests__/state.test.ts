@@ -1,7 +1,33 @@
-import { describe, test, expect } from "bun:test"
+// ============================================================================
+// state.test.ts
+// ============================================================================
+//
+// 这个文件测试会话状态和配置的管理逻辑。REPL 启动时需要解析命令行参数
+// 生成一份配置，运行过程中需要维护当前会话的信息（id、标题、文件列表、
+// 已批准的命令等），这些都由 src/state.ts 负责。
+//
+// 具体覆盖了：
+//   - 配置的默认值：不传 --server 默认连 localhost:4096，
+//     --thinking 默认关，--new 默认关，不指定 --session 默认空
+//   - 会话对象的结构：新建的会话必须有 id、标题，文件列表为空数组，
+//     已批准命令为空集合
+//   - 会话切换/新建/派生：这三种操作都会重置已批准命令，
+//     新建还会清空文件列表；切换本质上是用新 id 替换旧 id
+//   - 文件管理：加文件要去重（同一个文件加两次不会出现两次），
+//     清文件就是把列表置空
+//   - 权限模式批准：往已批准集合里加字符串
+//   - 多行输入：开始 → 逐行追加 → 结束拼成一段文本；
+//     如果一行都没输入就结束，返回 null
+//
+// 状态变更全部采用"创建新对象、不动旧对象"的方式，没有副作用。
+//
+// ============================================================================
+
+import { describe, test, expect } from "vitest"
 import { createSession, createConfig, startMultiline, pushLine, finishMultiline } from "../state"
 
 describe("state", () => {
+  // createConfig：CLI 参数 → 配置对象，验证默认值和自定义值
   describe("createConfig", () => {
     test("defaults", () => {
       const c = createConfig({})
@@ -32,6 +58,7 @@ describe("state", () => {
     })
   })
 
+  // createSession：新会话对象的结构完整性验证
   describe("createSession", () => {
     test("all fields", () => {
       const s = createSession({ id: "ses_001", title: "测试" })
@@ -55,6 +82,7 @@ describe("state", () => {
     })
   })
 
+  // session mutations：验证不可变更新模式下的所有会话状态变更
   describe("session mutations", () => {
     test("switchSession updates id, title, clears approved", () => {
       const s = createSession({ id: "ses_001", title: "旧" })
@@ -104,6 +132,7 @@ describe("state", () => {
     })
   })
 
+  // multiline：多行输入缓冲区，支持 start → push → finish 生命周期
   describe("multiline", () => {
     test("startMultiline", () => {
       const m = startMultiline()

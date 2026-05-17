@@ -1,4 +1,32 @@
-import { describe, test, expect } from "bun:test"
+// ============================================================================
+// format.test.ts
+// ============================================================================
+//
+// 这个文件测试终端输出的格式化逻辑。REPL 是一个命令行工具，所有显示在
+// 屏幕上的东西（AI 回复、工具状态、会话列表、历史消息等等）都是由
+// src/format.ts 里的函数生成的。
+//
+// 测试覆盖了约 20 个格式化函数，按输出的场景可以分成几组：
+//
+//   - AI 消息头：显示 Agent 名和模型名，字段缺失时不输出 "undefined"
+//   - 提示符和分隔线：输入提示符、带/不带标题的分隔线
+//   - 权限询问：显示 ⚠ 图标、命令类型和具体内容、y/n/a 三个选项
+//   - 连接状态：正在连接、已连接、连接失败、会话不存在、创建失败
+//   - /info 命令：标题、ID、目录、模型（没有则显示"默认"）、附件数
+//   - /files 命令：空列表显示"无附件"，否则编号列出
+//   - 流式输出中的单个事件：文字透传、工具运行(⚙)/完成(✓)/失败(✗)、
+//     推理过程（受 thinking 开关控制）、问题询问、中断提示、断连提示
+//   - /history 命令：空历史、角色前缀（You:/AI:）、超长消息截断加 "...”、
+//     多行保留换行、条数限制
+//   - /sessions 命令：空列表、三列表格（ID/标题/时间）、长文本截断
+//
+// 格式化函数输出的字符串都包含 ANSI 终端颜色码。测试里用一个 strip() 辅助
+// 函数先把颜色码去掉再断言纯文本内容，这样既能验证文案正确，又能确认
+// 颜色码确实存在。
+//
+// ============================================================================
+
+import { describe, test, expect } from "vitest"
 import {
   formatAIHeader, formatPrompt, formatPermissionPrompt, formatSeparator,
   formatConnecting, formatConnected, formatConnectionError, formatSessionNotFound,
@@ -11,6 +39,7 @@ import {
 function strip(s: string) { return s.replace(/\x1b\[\d+(;\d+)?m/g, "") }
 
 describe("format", () => {
+  // 格式化 AI 消息头：agent + modelID，容错 undefined
   describe("formatAIHeader", () => {
     test("all fields present", () => {
       const out = formatAIHeader("build", "claude-sonnet-4")
@@ -37,6 +66,7 @@ describe("format", () => {
     })
   })
 
+  // 权限请求提示：permission 类型 + patterns + 操作选项
   describe("formatPermissionPrompt", () => {
     test("renders permission request", () => {
       const out = formatPermissionPrompt("bash", ["rm -rf dist/"])
@@ -61,6 +91,7 @@ describe("format", () => {
     })
   })
 
+  // 连接状态消息族：连接中 / 已连接 / 连接失败 / Session 不存在 / 创建失败
   describe("connect messages", () => {
     test("formatConnecting", () => {
       const out = formatConnecting("http://localhost:4096")
@@ -90,6 +121,7 @@ describe("format", () => {
     })
   })
 
+  // /info 命令输出：Session 元信息汇总
   describe("formatInfo", () => {
     test("full info", () => {
       const out = formatInfo({ id: "ses_1", title: "测试", directory: "/a", model: "openai/gpt-4o", files: ["a.ts"] })
@@ -104,6 +136,7 @@ describe("format", () => {
     })
   })
 
+  // /files 命令输出：附件文件列表
   describe("formatFiles", () => {
     test("empty", () => {
       const out = formatFiles([])
@@ -119,6 +152,7 @@ describe("format", () => {
   })
 })
 
+// 流事件渲染：text delta / tool call / reasoning / question / abort / disconnect
 describe("format stream events", () => {
   describe("formatTextDelta", () => {
     test("normal text", () => {
@@ -129,6 +163,7 @@ describe("format stream events", () => {
     })
   })
 
+  // 工具调用渲染：running(⚙) / completed(✓) / error(✗)
   describe("formatToolCall", () => {
     test("running", () => {
       const out = formatToolCall("bash", "npm install", "running")
@@ -157,6 +192,7 @@ describe("format stream events", () => {
     })
   })
 
+  // 推理过程渲染：--thinking 开关控制显隐
   describe("formatReasoning", () => {
     test("enabled", () => {
       const out = formatReasoning("思考中...", true)
@@ -198,6 +234,7 @@ describe("format stream events", () => {
   })
 })
 
+// /history 命令输出：消息历史列表，支持截断和 limit
 describe("formatHistory", () => {
   test("empty", () => {
     const out = formatHistory([], 10)
@@ -233,6 +270,7 @@ describe("formatHistory", () => {
   })
 })
 
+// /sessions 命令输出：Session 列表表格，支持长文本截断
 describe("formatSessions", () => {
   test("empty", () => {
     const out = formatSessions([])
