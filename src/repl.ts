@@ -1,7 +1,7 @@
 import * as readline from "node:readline"
 import { select } from "@inquirer/prompts"
 import { type Config, type Session, ReplState, createSession } from "./state"
-import { parseSlash } from "./commands/slash"
+import { parseSlash, LOCAL_COMMANDS } from "./commands/slash"
 import { createPromptLoop } from "./commands/prompt"
 import {
   formatPrompt, formatSeparator, formatHistory, formatSessions, formatInfo,
@@ -15,7 +15,29 @@ export async function startREPL(config: Config, session: Session, client: any) {
   let activeAbort: AbortController | null = null
   let state = ReplState.Connecting
 
-  const rl = readline.createInterface({ input: process.stdin, output: process.stdout, prompt: formatPrompt() })
+  // --- Tab 补全：用户输入 "/" 后按 Tab 键，自动补全或列出所有可用的 slash 命令 ---
+  // 补全候选列表：将 LOCAL_COMMANDS 集合转为 "/command" 格式的数组
+  const slashCompletions = Array.from(LOCAL_COMMANDS).map(c => `/${c}`)
+
+  // readline completer 函数
+  // 参数 line 为当前输入行的全部文本
+  // 返回值 [matches, substring]：matches 是匹配的候选项数组，substring 是用于匹配的前缀
+  function completer(line: string): [string[], string] {
+    // 仅在输入以 "/" 开头时触发补全
+    if (line.startsWith("/")) {
+      // 只对命令部分做补全（取空格前的部分），已带参数的不再补全命令名
+      const spaceIdx = line.indexOf(" ")
+      if (spaceIdx !== -1) return [[], line]
+
+      const hits = slashCompletions.filter(c => c.startsWith(line))
+      // 如果有匹配，返回匹配项；否则返回全部候选，让用户看到所有可用命令
+      return [hits.length ? hits : slashCompletions, line]
+    }
+    // 非 "/" 开头的输入不做补全
+    return [[], line]
+  }
+
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout, prompt: formatPrompt(), completer })
 
   function setPrompt() {
     rl.setPrompt(multiline.active ? "> " : formatPrompt())

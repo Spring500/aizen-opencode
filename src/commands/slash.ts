@@ -1,4 +1,5 @@
-const LOCAL_COMMANDS = new Set([
+// 本地 slash 命令集合，同时用于命令解析和 Tab 补全
+export const LOCAL_COMMANDS = new Set([
   "quit", "exit", "switch", "new", "fork", "history",
   "file", "files", "clear-files", "model", "info", "sessions",
 ])
