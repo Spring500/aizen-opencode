@@ -48,8 +48,10 @@ async function init() {
       console.log(formatConnected(s.id, s.title ?? ""))
       const { startREPL } = await import("./repl")
       await startREPL(config, session, client)
-    } catch {
-      console.log(formatSessionNotFound(config.initSession))
+    } catch (err) {
+      const e = err as Error
+      console.log(formatSessionNotFound(config.initSession, e.message))
+      console.error(e.stack)
       process.exit(1)
     }
     return
@@ -63,7 +65,9 @@ async function init() {
       const { startREPL } = await import("./repl")
       await startREPL(config, session, client)
     } catch (err) {
-      console.log(formatSessionCreateError((err as Error).message))
+      const e = err as Error
+      console.log(formatSessionCreateError(e.message))
+      console.error(e.stack)
       process.exit(1)
     }
     return
@@ -86,9 +90,11 @@ async function init() {
     const { startREPL } = await import("./repl")
     await startREPL(config, session, client)
   } catch (err) {
-    console.log(formatSessionCreateError((err as Error).message))
+    const e = err as Error
+    console.log(formatSessionCreateError(e.message))
+    console.error(e.stack)
     process.exit(1)
   }
 }
 
-init().catch((err: Error) => { console.log(formatConnectionError(err.message)); process.exit(1) })
+init().catch((err: Error) => { console.log(formatConnectionError(err.message)); console.error(err.stack); process.exit(1) })

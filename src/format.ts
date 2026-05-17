@@ -56,8 +56,9 @@ export function formatConnectionError(reason: string): string {
   return `${pc.red(pc.bold("无法连接"))} ${reason}`
 }
 
-export function formatSessionNotFound(id: string): string {
-  return `${pc.red(pc.bold("session"))} ${pc.dim(id)} ${pc.red("不存在")}`
+export function formatSessionNotFound(id: string, detail?: string): string {
+  const base = `${pc.red(pc.bold("session"))} ${pc.dim(id)} ${pc.red("不存在")}`
+  return detail ? `${base} — ${detail}` : base
 }
 
 export function formatSessionCreateError(reason: string): string {
