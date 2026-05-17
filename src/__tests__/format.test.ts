@@ -241,32 +241,44 @@ describe("formatHistory", () => {
     expect(strip(out)).toContain("无历史")
   })
   test("user message", () => {
-    const out = formatHistory([{ role: "user", text: "hello" }])
+    const out = formatHistory([{ role: "user", lines: [{ type: "text", content: "hello" }] }])
     expect(out).toContain("You:")
     expect(out).toContain("hello")
   })
   test("assistant message", () => {
-    const out = formatHistory([{ role: "assistant", text: "hi" }])
+    const out = formatHistory([{ role: "assistant", lines: [{ type: "text", content: "hi" }] }])
     expect(out).toContain("AI:")
     expect(out).toContain("hi")
   })
   test("long message NOT truncated", () => {
     const msg = "a".repeat(200)
-    const out = formatHistory([{ role: "user", text: msg }])
+    const out = formatHistory([{ role: "user", lines: [{ type: "text", content: msg }] }])
     expect(strip(out)).not.toContain("...")
     expect(strip(out)).toContain(msg)
   })
   test("multiline preserved", () => {
-    const out = formatHistory([{ role: "user", text: "line1\nline2" }])
+    const out = formatHistory([{ role: "user", lines: [{ type: "text", content: "line1\nline2" }] }])
     expect(out).toContain("line1")
     expect(out).toContain("line2")
   })
   test("respects limit", () => {
-    const msgs = Array.from({ length: 20 }, (_, i) => ({ role: "user" as const, text: `msg${i}` }))
+    const msgs = Array.from({ length: 20 }, (_, i) => ({ role: "user" as const, lines: [{ type: "text" as const, content: `msg${i}` }] }))
     const out = formatHistory(msgs, 5)
     const lines = out.split("\n")
     const count = lines.filter(l => l.includes("You:")).length
     expect(count).toBe(5)
+  })
+  test("tool call rendered in history", () => {
+    const out = formatHistory([{ role: "assistant", lines: [
+      { type: "text", content: "Let me check." },
+      { type: "tool", content: "⚙ [bash] ls (completed)" },
+      { type: "tool-output", content: "file.txt" },
+    ]}])
+    const s = strip(out)
+    expect(s).toContain("Let me check.")
+    expect(s).toContain("⚙")
+    expect(s).toContain("bash")
+    expect(s).toContain("→ file.txt")
   })
 })
 

@@ -69,9 +69,9 @@ describe("format pipeline", () => {
   })
   test("formatHistory with mixed messages", () => {
     const msgs = [
-      { role: "user" as const, text: "hello" },
-      { role: "assistant" as const, text: "你好！" },
-      { role: "user" as const, text: "查看文件" },
+      { role: "user" as const, lines: [{ type: "text" as const, content: "hello" }] },
+      { role: "assistant" as const, lines: [{ type: "text" as const, content: "你好！" }] },
+      { role: "user" as const, lines: [{ type: "text" as const, content: "查看文件" }] },
     ]
     const out = formatHistory(msgs, 3)
     expect(out).toContain("hello")

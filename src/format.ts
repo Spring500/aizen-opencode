@@ -134,17 +134,36 @@ export function formatDisconnectPermMessage(): string {
 }
 
 export function formatHistory(
-  messages: { role: string; text: string }[],
+  entries: Array<{ role: string; lines: Array<{ type: "text" | "tool" | "tool-output"; content: string }> }>,
   maxCount = 10,
 ): string {
-  if (messages.length === 0) return pc.dim("无历史")
-  const items = messages.slice(-maxCount)
+  if (entries.length === 0) return pc.dim("无历史")
+  const items = entries.slice(-maxCount)
   const header = formatSeparator(`最近 ${items.length} 条消息`)
-  const lines = items.map((msg) => {
-    const prefix = msg.role === "user" ? pc.cyan("You:  ") : pc.green("AI:   ")
-    return prefix + msg.text
-  })
-  return header + "\n" + lines.join("\n\n") + "\n" + formatSeparator()
+
+  const blocks: string[] = []
+  for (const entry of items) {
+    const roleColor = entry.role === "user" ? pc.cyan : pc.green
+    const toolColor = pc.yellow
+    const outputColor = pc.dim
+    const prefix = entry.role === "user" ? "You:  " : "AI:   "
+
+    const entryLines: string[] = []
+    for (let i = 0; i < entry.lines.length; i++) {
+      const line = entry.lines[i]
+      const indent = i === 0 ? prefix : "      "
+      if (line.type === "text") {
+        entryLines.push(roleColor(indent + line.content))
+      } else if (line.type === "tool") {
+        entryLines.push(toolColor(indent + line.content))
+      } else {
+        entryLines.push(outputColor(indent + "→ " + line.content))
+      }
+    }
+    blocks.push(entryLines.join("\n"))
+  }
+
+  return header + "\n" + blocks.join("\n\n") + "\n" + formatSeparator()
 }
 
 export function formatSessions(

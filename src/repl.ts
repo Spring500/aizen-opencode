@@ -9,12 +9,35 @@ import {
   formatConnected, formatDisconnectMessage, formatDisconnectPermMessage,
 } from "./format"
 
-export function extractMessageText(m: any): { role: string; text: string } {
-  const textPart = (m.parts ?? []).find((p: any) => p.type === "text" && typeof p.text === "string")
-  return {
-    role: m.info?.role ?? m.role,
-    text: textPart?.text ?? ((m.parts ?? []).map((p: any) => p.text).filter(Boolean).join(" ") || "(no text)"),
+export function extractMessageContent(m: any): { role: string; lines: Array<{ type: "text" | "tool" | "tool-output"; content: string }> } {
+  const role = m.info?.role ?? m.role
+  const lines: Array<{ type: "text" | "tool" | "tool-output"; content: string }> = []
+
+  for (const part of (m.parts ?? [])) {
+    if ((part.type === "text" || part.type === "reasoning") && typeof part.text === "string" && part.text) {
+      lines.push({ type: "text", content: part.text })
+    } else if (part.type === "tool") {
+      const st = part.state?.status ?? "unknown"
+      const name = part.tool
+      const title = part.state?.title ?? name
+      const icons: Record<string, string> = { running: "⚙", completed: "✓", error: "✗", pending: "…" }
+      const icon = icons[st] ?? "?"
+      lines.push({ type: "tool", content: `${icon} [${name}] ${title} (${st})` })
+      if (st === "completed" || st === "error") {
+        const output = (part.state?.output ?? part.state?.error ?? "")
+        if (output) {
+          const truncated = output.length > 200 ? output.slice(0, 200) + "..." : output
+          lines.push({ type: "tool-output", content: truncated })
+        }
+      }
+    }
   }
+
+  if (lines.length === 0) {
+    lines.push({ type: "text", content: "(no text)" })
+  }
+
+  return { role, lines }
 }
 
 export async function startREPL(config: Config, session: Session, client: any) {
@@ -315,7 +338,7 @@ export async function startREPL(config: Config, session: Session, client: any) {
         async handler(args) {
           const limit = args ? parseInt(args) : 10
           const msgs = await client.getMessages(currentSession.id, limit)
-          const items = msgs.map(extractMessageText)
+          const items = msgs.map(extractMessageContent)
           print(formatHistory(items, limit))
         },
       },
