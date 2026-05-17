@@ -280,6 +280,15 @@ describe("formatHistory", () => {
     expect(s).toContain("bash")
     expect(s).toContain("→ file.txt")
   })
+  test("reasoning rendered with dim italic marker", () => {
+    const out = formatHistory([{ role: "assistant", lines: [
+      { type: "reasoning", content: "thinking about the problem..." },
+      { type: "text", content: "The answer is 4." },
+    ]}])
+    const s = strip(out)
+    expect(s).toContain("· thinking about the problem...")
+    expect(s).toContain("The answer is 4.")
+  })
 })
 
 // /sessions 命令输出：Session 列表表格，支持长文本截断

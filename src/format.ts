@@ -144,7 +144,7 @@ export function formatDisconnectPermMessage(): string {
 }
 
 export function formatHistory(
-  entries: Array<{ role: string; lines: Array<{ type: "text" | "tool" | "tool-output"; content: string }> }>,
+  entries: Array<{ role: string; lines: Array<{ type: "text" | "reasoning" | "tool" | "tool-output"; content: string }> }>,
   maxCount = 10,
 ): string {
   if (entries.length === 0) return pc.dim("无历史")
@@ -154,6 +154,7 @@ export function formatHistory(
   const blocks: string[] = []
   for (const entry of items) {
     const roleColor = entry.role === "user" ? pc.cyan : pc.green
+    const reasoningColor = (s: string) => pc.dim(pc.italic(s))
     const toolColor = pc.yellow
     const outputColor = pc.dim
     const prefix = entry.role === "user" ? "You:  " : "AI:   "
@@ -164,6 +165,8 @@ export function formatHistory(
       const indent = i === 0 ? prefix : "      "
       if (line.type === "text") {
         entryLines.push(roleColor(indent + line.content))
+      } else if (line.type === "reasoning") {
+        entryLines.push(reasoningColor(indent + "· " + line.content))
       } else if (line.type === "tool") {
         entryLines.push(toolColor(indent + line.content))
       } else {

@@ -49,7 +49,7 @@ describe("extractMessageContent", () => {
     expect(result.lines).toEqual([{ type: "text", content: "(no text)" }])
   })
 
-  test("fallback to ReasoningPart text when no TextPart", () => {
+  test("reasoning part has its own type", () => {
     const m = {
       info: { role: "assistant" },
       parts: [
@@ -59,7 +59,7 @@ describe("extractMessageContent", () => {
     }
     const result = extractMessageContent(m)
     expect(result.role).toBe("assistant")
-    expect(result.lines[0]).toEqual({ type: "text", content: "thinking..." })
+    expect(result.lines[0]).toEqual({ type: "reasoning", content: "thinking..." })
     expect(result.lines[1].type).toBe("tool")
     expect(result.lines[2].type).toBe("tool-output")
   })

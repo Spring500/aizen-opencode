@@ -10,13 +10,15 @@ import {
   setTerminalTitle,
 } from "./format"
 
-export function extractMessageContent(m: any): { role: string; lines: Array<{ type: "text" | "tool" | "tool-output"; content: string }> } {
+export function extractMessageContent(m: any): { role: string; lines: Array<{ type: "text" | "reasoning" | "tool" | "tool-output"; content: string }> } {
   const role = m.info?.role ?? m.role
-  const lines: Array<{ type: "text" | "tool" | "tool-output"; content: string }> = []
+  const lines: Array<{ type: "text" | "reasoning" | "tool" | "tool-output"; content: string }> = []
 
   for (const part of (m.parts ?? [])) {
-    if ((part.type === "text" || part.type === "reasoning") && typeof part.text === "string" && part.text) {
+    if (part.type === "text" && typeof part.text === "string" && part.text) {
       lines.push({ type: "text", content: part.text })
+    } else if (part.type === "reasoning" && typeof part.text === "string" && part.text) {
+      lines.push({ type: "reasoning", content: part.text })
     } else if (part.type === "tool") {
       const st = part.state?.status ?? "unknown"
       const name = part.tool
