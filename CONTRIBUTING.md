@@ -10,15 +10,15 @@ git clone <repo-url>
 cd aizen-opencode
 
 # 安装依赖
-bun install
+npm install
 
 # 启动开发
-bun run dev
+npm run dev
 ```
 
 ### 环境要求
 
-- [Bun](https://bun.sh) >= 1.0
+- [Node.js](https://nodejs.org) >= 18（附带 npm）
 - [TypeScript](https://www.typescriptlang.org/) >= 5.7
 - 运行中的 opencode 服务用于集成测试
 
@@ -33,10 +33,10 @@ bun run dev
 
 ```bash
 # 运行全部测试
-bun test
+npm test
 
 # 类型检查
-bun run typecheck
+npm run typecheck
 ```
 
 请确保提交前所有测试通过且类型检查无错误。
@@ -49,7 +49,7 @@ bun run typecheck
 |------|------|
 | `feat:` | 新功能 |
 | `fix:` | Bug 修复 |
-| `chore:` | 构建/工具/依赖变更 |
+| `build:` | 构建系统 / 依赖变更 |
 | `test:` | 测试相关 |
 | `docs:` | 文档变更 |
 | `refactor:` | 重构（不改变行为） |
@@ -70,7 +70,7 @@ fix: 修复多行输入空行丢失问题
 
 1. Fork 本仓库并创建特性分支（`feat/xxx` 或 `fix/xxx`）
 2. 编写代码并添加对应的测试
-3. 确保 `bun test` 和 `bun run typecheck` 通过
+3. 确保 `npm test` 和 `npm run typecheck` 通过
 4. 提交 PR 并描述你的改动
 
 ## 目录结构
