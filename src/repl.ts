@@ -1,7 +1,7 @@
 import * as readline from "node:readline"
 import { select } from "@inquirer/prompts"
 import { type Config, type Session, ReplState, createSession } from "./state"
-import { parseSlash, LOCAL_COMMANDS } from "./commands/slash"
+import { parseSlash, type CommandDef } from "./commands/slash"
 import { createPromptLoop } from "./commands/prompt"
 import {
   formatPrompt, formatSeparator, formatHistory, formatSessions, formatInfo,
@@ -15,9 +15,10 @@ export async function startREPL(config: Config, session: Session, client: any) {
   let activeAbort: AbortController | null = null
   let state = ReplState.Connecting
 
-  // --- Tab 补全：用户输入 "/" 后按 Tab 键，自动补全或列出所有可用的 slash 命令 ---
-  // 补全候选列表：将 LOCAL_COMMANDS 集合转为 "/command" 格式的数组
-  const slashCompletions = Array.from(LOCAL_COMMANDS).map(c => `/${c}`)
+  // --- Tab 补全：由下方命令注册表动态生成候选列表 ---
+  let commandMap = new Map<string, CommandDef>()
+  let slashCompletions: string[] = []
+  let localCommandNames = new Set<string>()
 
   // readline completer 函数
   // 参数 line 为当前输入行的全部文本
@@ -124,98 +125,171 @@ export async function startREPL(config: Config, session: Session, client: any) {
     return chosen as string
   }
 
-  async function handleLocalCommand(command: string, args: string) {
-    switch (command) {
-      case "quit": case "exit": state = ReplState.Exiting; print("再见"); process.exit(0)
-      case "sessions": {
-        const limit = args ? parseInt(args) : undefined
-        const list = await client.listSessions({ roots: true, limit })
-        const formatted = list.map((s: any) => ({ id: s.id, title: s.title, updated: new Date(s.time?.updated ?? s.updated ?? Date.now()).toLocaleString() }))
-        print(formatSessions(formatted))
-        break
-      }
-      case "switch":
-        if (!args) {
-          const id = await pickSession(client)
-          if (!id) break
-          args = id
-        }
-        try {
-          const sessionInfo = await client.getSession(args)
-          currentSession = createSession({ id: args, title: sessionInfo.title ?? args })
-          print(`已切换到 ${args}`)
-        } catch (err) {
-          const e = err as Error
-          print(`切换失败: ${e.message}`)
-          console.error(e.stack)
-        }
-        break
-      case "new": {
-        const title = args || undefined
-        try {
-          const res = await client.createSession({ title })
-          currentSession = createSession({ id: res.id, title: res.title ?? "新会话" })
-          print(`已创建新会话: ${res.id}`)
-        } catch (err) {
-          const e = err as Error
-          print(`创建失败: ${e.message}`)
-          console.error(e.stack)
-        }
-        break
-      }
-      case "fork": {
-        try {
-          if (!args) {
-            const id = await pickSession(client)
-            if (!id) break
-            const res = await client.forkSession(id)
+  // ============================================================================
+  // 命令注册表 — 每个命令自注册名称、说明和处理函数
+  //
+  // 新增命令只需在此注册，/help 自动列出，Tab 补全自动生效
+  // 无需额外维护 switch-case 或命令名列表
+  // ============================================================================
+  {
+    const commands: CommandDef[] = [
+      {
+        name: "help",
+        description: "显示所有可用命令及说明",
+        handler() {
+          const maxLen = Math.max(...commands.map(c => c.name.length))
+          const lines = commands.map(c => `  /${c.name.padEnd(maxLen + 2)}${c.description}`)
+          print(`可用命令:\n${lines.join("\n")}`)
+        },
+      },
+      {
+        name: "quit",
+        description: "退出程序",
+        handler() { state = ReplState.Exiting; print("再见"); process.exit(0) },
+      },
+      {
+        name: "exit",
+        description: "退出程序（同 quit）",
+        handler() { state = ReplState.Exiting; print("再见"); process.exit(0) },
+      },
+      {
+        name: "sessions",
+        description: "列出所有会话，可选参数限制数量",
+        async handler(args) {
+          const limit = args ? parseInt(args) : undefined
+          const list = await client.listSessions({ roots: true, limit })
+          const formatted = list.map((s: any) => ({ id: s.id, title: s.title, updated: new Date(s.time?.updated ?? s.updated ?? Date.now()).toLocaleString() }))
+          print(formatSessions(formatted))
+        },
+      },
+      {
+        name: "switch",
+        description: "切换会话，可选参数为会话 ID，无参数时交互选择",
+        async handler(id) {
+          try {
+            if (!id) {
+              const picked = await pickSession(client)
+              if (!picked) return
+              id = picked
+            }
+            const sessionInfo = await client.getSession(id)
+            currentSession = createSession({ id, title: sessionInfo.title ?? id })
+            print(`已切换到 ${id}`)
+          } catch (err) {
+            const e = err as Error
+            print(`切换失败: ${e.message}`)
+            console.error(e.stack)
+          }
+        },
+      },
+      {
+        name: "new",
+        description: "创建新会话，可选参数为标题",
+        async handler(title) {
+          try {
+            const res = await client.createSession({ title: title || undefined })
+            currentSession = createSession({ id: res.id, title: res.title ?? "新会话" })
+            print(`已创建新会话: ${res.id}`)
+          } catch (err) {
+            const e = err as Error
+            print(`创建失败: ${e.message}`)
+            console.error(e.stack)
+          }
+        },
+      },
+      {
+        name: "fork",
+        description: "复制会话，可选参数为消息 ID 或目标会话 ID",
+        async handler(args) {
+          try {
+            if (!args) {
+              const picked = await pickSession(client)
+              if (!picked) return
+              const res = await client.forkSession(picked)
+              currentSession = createSession({ id: res.id, title: res.title ?? "fork" })
+              print(`已 fork: ${res.id}`)
+              return
+            }
+            const res = await client.forkSession(currentSession.id, args)
             currentSession = createSession({ id: res.id, title: res.title ?? "fork" })
             print(`已 fork: ${res.id}`)
-            break
+          } catch (err) {
+            const e = err as Error
+            print(`fork 失败: ${e.message}`)
+            console.error(e.stack)
           }
-          const res = await client.forkSession(currentSession.id, args)
-          currentSession = createSession({ id: res.id, title: res.title ?? "fork" })
-          print(`已 fork: ${res.id}`)
-        } catch (err) {
-          const e = err as Error
-          print(`fork 失败: ${e.message}`)
-          console.error(e.stack)
-        }
-        break
-      }
-      case "history": {
-        const limit = args ? parseInt(args) : 10
-        const msgs = await client.getMessages(currentSession.id, limit)
-        const items = msgs.map((m: any) => ({
-          role: m.info?.role ?? m.role,
-          text: typeof m.parts?.[0]?.text === "string" ? m.parts[0].text : JSON.stringify(m.message ?? ""),
-        }))
-        print(formatHistory(items, limit))
-        break
-      }
-      case "file":
-        if (args) {
-          if (!currentSession.files.includes(args)) {
-            currentSession = { ...currentSession, files: [...currentSession.files, args] }
+        },
+      },
+      {
+        name: "history",
+        description: "查看对话历史，可选参数为条数限制",
+        async handler(args) {
+          const limit = args ? parseInt(args) : 10
+          const msgs = await client.getMessages(currentSession.id, limit)
+          const items = msgs.map((m: any) => ({
+            role: m.info?.role ?? m.role,
+            text: typeof m.parts?.[0]?.text === "string" ? m.parts[0].text : JSON.stringify(m.message ?? ""),
+          }))
+          print(formatHistory(items, limit))
+        },
+      },
+      {
+        name: "info",
+        description: "显示当前会话信息",
+        handler() {
+          print(formatInfo({
+            id: currentSession.id, title: currentSession.title, directory: config.directory,
+            model: currentSession.model, files: currentSession.files,
+          }))
+        },
+      },
+      {
+        name: "model",
+        description: "查看或切换模型，可选参数为模型 ID",
+        async handler(args) {
+          if (args) {
+            currentSession = { ...currentSession, model: args }
+            await client.sendCommand(currentSession.id, { command: "model", arguments: args, model: args })
+            print(`模型: ${args}`)
+          } else {
+            print(`当前模型: ${currentSession.model ?? "默认"}`)
           }
-          print(formatFiles(currentSession.files))
-        }
-        break
-      case "files": print(formatFiles(currentSession.files)); break
-      case "clear-files": currentSession = { ...currentSession, files: [] }; print(formatFiles(currentSession.files)); break
-      case "model":
-        if (args) {
-          currentSession = { ...currentSession, model: args }
-          await client.sendCommand(currentSession.id, { command: "model", arguments: args, model: args })
-          print(`模型: ${args}`)
-        }
-        else print(`当前模型: ${currentSession.model ?? "默认"}`)
-        break
-      case "info": print(formatInfo({
-        id: currentSession.id, title: currentSession.title, directory: config.directory,
-        model: currentSession.model, files: currentSession.files,
-      })); break
-    }
+        },
+      },
+      {
+        name: "file",
+        description: "添加附件文件，参数为文件路径",
+        handler(args) {
+          if (args) {
+            if (!currentSession.files.includes(args)) {
+              currentSession = { ...currentSession, files: [...currentSession.files, args] }
+            }
+            print(formatFiles(currentSession.files))
+          }
+        },
+      },
+      {
+        name: "files",
+        description: "列出当前会话已添加的文件",
+        handler() { print(formatFiles(currentSession.files)) },
+      },
+      {
+        name: "clear-files",
+        description: "清除所有已添加的文件",
+        handler() { currentSession = { ...currentSession, files: [] }; print(formatFiles(currentSession.files)) },
+      },
+    ]
+
+    // 构建查找表 / 本地命令名集合 / Tab 补全候选列表
+    commandMap = new Map(commands.map(c => [c.name, c]))
+    localCommandNames = new Set(commands.map(c => c.name))
+    slashCompletions = commands.map(c => `/${c.name}`)
+  }
+
+  // 根据命令名查找注册表并执行处理函数（替代原来的 switch-case）
+  async function handleLocalCommand(command: string, args: string) {
+    const def = commandMap.get(command)
+    if (def) await def.handler(args)
   }
 
   rl.on("line", async (line: string) => {
@@ -241,7 +315,7 @@ export async function startREPL(config: Config, session: Session, client: any) {
     }
 
     if (trimmed.startsWith("/")) {
-      const cmd = parseSlash(trimmed)
+      const cmd = parseSlash(trimmed, localCommandNames)
       if (cmd === null) { toIdle(); return }
       if (cmd.local) { await handleLocalCommand(cmd.command, cmd.args); toIdle(); return }
       await client.sendCommand(currentSession.id, { command: cmd.command, arguments: cmd.arguments })

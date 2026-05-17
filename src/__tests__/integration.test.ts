@@ -21,7 +21,18 @@
 
 import { describe, test, expect } from "vitest"
 import { createSession } from "../state"
-import { parseSlash } from "../commands/slash"
+import { parseSlash as _parseSlash } from "../commands/slash"
+
+// 本地命令名集合 — 与 repl.ts 中的命令注册表保持同步
+const LOCAL_COMMANDS = new Set([
+  "quit", "exit", "switch", "new", "fork", "history",
+  "file", "files", "clear-files", "model", "info", "sessions",
+])
+
+// 包装函数：传入第二参数以匹配新的 parseSlash 签名
+function parseSlash(input: string) {
+  return _parseSlash(input, LOCAL_COMMANDS)
+}
 import { processEvent } from "../commands/prompt"
 import { formatHistory, formatSessions } from "../format"
 import { createClient } from "../client"

@@ -1,15 +1,16 @@
-// 本地 slash 命令集合，同时用于命令解析和 Tab 补全
-export const LOCAL_COMMANDS = new Set([
-  "quit", "exit", "switch", "new", "fork", "history",
-  "file", "files", "clear-files", "model", "info", "sessions",
-])
+// 命令描述：每个本地命令的名称、说明和处理函数
+export interface CommandDef {
+  name: string
+  description: string
+  handler: (args: string) => void | Promise<void>
+}
 
 export type SlashResult =
   | { local: true; command: string; args: string }
   | { local: false; command: string; arguments: string }
   | null
 
-export function parseSlash(input: string): SlashResult {
+export function parseSlash(input: string, localCommands: Set<string>): SlashResult {
   if (!input.startsWith("/")) return null
 
   const spaceIdx = input.indexOf(" ")
@@ -17,7 +18,7 @@ export function parseSlash(input: string): SlashResult {
   const rawArgs = spaceIdx === -1 ? "" : input.slice(spaceIdx + 1).trim()
   const command = rawCommand.toLowerCase()
 
-  if (LOCAL_COMMANDS.has(command)) {
+  if (localCommands.has(command)) {
     return { local: true, command, args: rawArgs }
   }
 

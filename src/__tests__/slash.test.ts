@@ -24,7 +24,18 @@
 // ============================================================================
 
 import { describe, test, expect } from "vitest"
-import { parseSlash } from "../commands/slash"
+import { parseSlash as _parseSlash } from "../commands/slash"
+
+// 本地命令名集合 — 与 repl.ts 中的命令注册表保持同步
+const LOCAL_COMMANDS = new Set([
+  "quit", "exit", "switch", "new", "fork", "history",
+  "file", "files", "clear-files", "model", "info", "sessions",
+])
+
+// 包装函数：将 LOCAL_COMMANDS 作为第二参数传入 parseSlash，保持原有测试代码不变
+function parseSlash(input: string) {
+  return _parseSlash(input, LOCAL_COMMANDS)
+}
 
 describe("slash", () => {
   // 本地命令：/quit /switch /new /file 等，由 REPL 内部处理
