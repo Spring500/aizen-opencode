@@ -278,8 +278,8 @@ describe("formatHistory", () => {
     expect(s).toContain("Let me check.")
     expect(s).toContain("⚙")
     expect(s).toContain("bash")
-    expect(s).toContain("工具调用:")
-    expect(s).toContain("工具调用结果:")
+    expect(s).toContain("工具:")
+    expect(s).toContain("结果:")
     expect(s).toContain("file.txt")
   })
   test("reasoning rendered with dim italic marker", () => {
@@ -288,7 +288,7 @@ describe("formatHistory", () => {
       { type: "text", content: "The answer is 4." },
     ]}])
     const s = strip(out)
-    expect(s).toContain("AI 思考:")
+    expect(s).toContain("思考:")
     expect(s).toContain("thinking about the problem...")
     expect(s).toContain("The answer is 4.")
   })

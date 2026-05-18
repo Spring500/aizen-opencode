@@ -156,7 +156,7 @@ export function formatHistory(
   const header = formatSeparator(`最近 ${items.length} 条消息`)
 
   const blocks: string[] = []
-  const VPAD = 15
+  const VPAD = 8
   const MARGIN = "  "
   const CONT = MARGIN + " ".repeat(VPAD)
 
@@ -171,15 +171,15 @@ export function formatHistory(
         italic = false
       } else if (line.type === "reasoning") {
         color = pc.dim
-        label = "AI 思考:"
+        label = "思考:"
         italic = true
       } else if (line.type === "tool") {
         color = pc.yellow
-        label = "工具调用:"
+        label = "工具:"
         italic = false
       } else {
         color = pc.dim
-        label = "工具调用结果:"
+        label = "结果:"
         italic = false
       }
       const split = line.content.split("\n")
