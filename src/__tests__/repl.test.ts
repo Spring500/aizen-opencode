@@ -150,4 +150,18 @@ describe("extractMessageContent", () => {
     const result = extractMessageContent(m)
     expect(result.lines).toHaveLength(4) // text + reasoning + tool + tool-output
   })
+
+  test("unhandled part types are silently skipped", () => {
+    const m = {
+      info: { role: "assistant" },
+      parts: [
+        { type: "step-start" },
+        { type: "text", text: "hello" },
+        { type: "patch", hash: "abc" },
+        { type: "retry", attempt: 1 },
+      ],
+    }
+    const result = extractMessageContent(m)
+    expect(result.lines).toEqual([{ type: "text", content: "hello" }])
+  })
 })

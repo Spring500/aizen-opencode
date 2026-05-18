@@ -368,6 +368,15 @@ export async function startREPL(config: Config, session: Session, client: any) {
                 { name: "文本回复", value: "text", checked: visibleParts.has("text") },
                 { name: "思考过程", value: "reasoning", checked: visibleParts.has("reasoning") },
                 { name: "工具调用及结果", value: "tool", checked: visibleParts.has("tool") },
+                { name: "步骤开始 (暂不显示)", value: "step-start", checked: visibleParts.has("step-start") },
+                { name: "步骤结束 (暂不显示)", value: "step-finish", checked: visibleParts.has("step-finish") },
+                { name: "文件引用 (暂不显示)", value: "file", checked: visibleParts.has("file") },
+                { name: "快照 (暂不显示)", value: "snapshot", checked: visibleParts.has("snapshot") },
+                { name: "补丁 (暂不显示)", value: "patch", checked: visibleParts.has("patch") },
+                { name: "子代理 (暂不显示)", value: "agent", checked: visibleParts.has("agent") },
+                { name: "重试 (暂不显示)", value: "retry", checked: visibleParts.has("retry") },
+                { name: "压缩 (暂不显示)", value: "compaction", checked: visibleParts.has("compaction") },
+                { name: "子任务 (暂不显示)", value: "subtask", checked: visibleParts.has("subtask") },
               ],
             })
             visibleParts = new Set(chosen as string[])
