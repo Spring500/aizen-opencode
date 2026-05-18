@@ -3,6 +3,10 @@ import stringWidth from "string-width"
 
 const segmenter = new Intl.Segmenter("en", { granularity: "grapheme" })
 
+function visualPad(s: string, targetWidth: number): string {
+  return s + " ".repeat(Math.max(0, targetWidth - stringWidth(s)))
+}
+
 function truncateByWidth(str: string, maxWidth: number): string {
   let result = ""
   let width = 0
@@ -152,7 +156,9 @@ export function formatHistory(
   const header = formatSeparator(`最近 ${items.length} 条消息`)
 
   const blocks: string[] = []
-  const PAD = 18
+  const VPAD = 15
+  const MARGIN = "  "
+  const CONT = MARGIN + " ".repeat(VPAD)
 
   for (const entry of items) {
     const isUser = entry.role === "user"
@@ -161,20 +167,23 @@ export function formatHistory(
       const split = line.content.split("\n")
       for (let i = 0; i < split.length; i++) {
         const text = split[i]
-        const cont = " ".repeat(PAD)
         if (line.type === "text") {
           const color = isUser ? pc.cyan : pc.green
-          const label = isUser ? "You:" : "AI:"
-          entryLines.push(color((i === 0 ? pc.bold(label.padEnd(PAD)) : cont) + text))
+          const label = visualPad(isUser ? "你:" : "AI:", VPAD)
+          const prefix = i === 0 ? MARGIN + pc.bold(label) : CONT
+          entryLines.push(color(prefix + text))
         } else if (line.type === "reasoning") {
-          const label = "AI thinking:"
-          entryLines.push(pc.dim((i === 0 ? pc.bold(label.padEnd(PAD)) : cont) + pc.italic(text)))
+          const label = visualPad("AI 思考:", VPAD)
+          const prefix = i === 0 ? MARGIN + pc.bold(label) : CONT
+          entryLines.push(pc.dim(prefix + pc.italic(text)))
         } else if (line.type === "tool") {
-          const label = "Tool call:"
-          entryLines.push(pc.yellow((i === 0 ? pc.bold(label.padEnd(PAD)) : cont) + text))
+          const label = visualPad("工具调用:", VPAD)
+          const prefix = i === 0 ? MARGIN + pc.bold(label) : CONT
+          entryLines.push(pc.yellow(prefix + text))
         } else {
-          const label = "Tool call Result:"
-          entryLines.push(pc.dim((i === 0 ? pc.bold(label.padEnd(PAD)) : cont) + text))
+          const label = visualPad("工具调用结果:", VPAD)
+          const prefix = i === 0 ? MARGIN + pc.bold(label) : CONT
+          entryLines.push(pc.dim(prefix + text))
         }
       }
     }

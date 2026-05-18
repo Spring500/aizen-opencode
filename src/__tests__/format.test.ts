@@ -242,7 +242,7 @@ describe("formatHistory", () => {
   })
   test("user message", () => {
     const out = formatHistory([{ role: "user", lines: [{ type: "text", content: "hello" }] }])
-    expect(out).toContain("You:")
+    expect(out).toContain("你:")
     expect(out).toContain("hello")
   })
   test("assistant message", () => {
@@ -265,7 +265,7 @@ describe("formatHistory", () => {
     const msgs = Array.from({ length: 20 }, (_, i) => ({ role: "user" as const, lines: [{ type: "text" as const, content: `msg${i}` }] }))
     const out = formatHistory(msgs, 5)
     const lines = out.split("\n")
-    const count = lines.filter(l => l.includes("You:")).length
+    const count = lines.filter(l => l.includes("你:")).length
     expect(count).toBe(5)
   })
   test("tool call rendered in history", () => {
@@ -278,8 +278,8 @@ describe("formatHistory", () => {
     expect(s).toContain("Let me check.")
     expect(s).toContain("⚙")
     expect(s).toContain("bash")
-    expect(s).toContain("Tool call:")
-    expect(s).toContain("Tool call Result:")
+    expect(s).toContain("工具调用:")
+    expect(s).toContain("工具调用结果:")
     expect(s).toContain("file.txt")
   })
   test("reasoning rendered with dim italic marker", () => {
@@ -288,7 +288,7 @@ describe("formatHistory", () => {
       { type: "text", content: "The answer is 4." },
     ]}])
     const s = strip(out)
-    expect(s).toContain("AI thinking:")
+    expect(s).toContain("AI 思考:")
     expect(s).toContain("thinking about the problem...")
     expect(s).toContain("The answer is 4.")
   })
