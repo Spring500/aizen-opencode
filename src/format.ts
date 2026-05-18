@@ -158,33 +158,32 @@ export function formatHistory(
   const blocks: string[] = []
   const VPAD = 15
   const MARGIN = "  "
-  const CONT = MARGIN + " ".repeat(VPAD)
 
   for (const entry of items) {
     const isUser = entry.role === "user"
     const entryLines: string[] = []
     for (const line of entry.lines) {
-      const split = line.content.split("\n")
-      for (let i = 0; i < split.length; i++) {
-        const text = split[i]
-        if (line.type === "text") {
-          const color = isUser ? pc.cyan : pc.green
-          const label = visualPad(isUser ? "你:" : "AI:", VPAD)
-          const prefix = i === 0 ? MARGIN + pc.bold(label) : CONT
-          entryLines.push(color(prefix + text))
-        } else if (line.type === "reasoning") {
-          const label = visualPad("AI 思考:", VPAD)
-          const prefix = i === 0 ? MARGIN + pc.bold(label) : CONT
-          entryLines.push(pc.dim(prefix + pc.italic(text)))
-        } else if (line.type === "tool") {
-          const label = visualPad("工具调用:", VPAD)
-          const prefix = i === 0 ? MARGIN + pc.bold(label) : CONT
-          entryLines.push(pc.yellow(prefix + text))
-        } else {
-          const label = visualPad("工具调用结果:", VPAD)
-          const prefix = i === 0 ? MARGIN + pc.bold(label) : CONT
-          entryLines.push(pc.dim(prefix + text))
-        }
+      let color: (s: string) => string, label: string, italic: boolean
+      if (line.type === "text") {
+        color = isUser ? pc.cyan : pc.green
+        label = isUser ? "你:" : "AI:"
+        italic = false
+      } else if (line.type === "reasoning") {
+        color = pc.dim
+        label = "AI 思考:"
+        italic = true
+      } else if (line.type === "tool") {
+        color = pc.yellow
+        label = "工具调用:"
+        italic = false
+      } else {
+        color = pc.dim
+        label = "工具调用结果:"
+        italic = false
+      }
+      const prefix = MARGIN + pc.bold(visualPad(label, VPAD))
+      for (const text of line.content.split("\n")) {
+        entryLines.push(color(prefix + (italic ? pc.italic(text) : text)))
       }
     }
     blocks.push(entryLines.join("\n"))
