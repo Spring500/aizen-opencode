@@ -278,7 +278,9 @@ describe("formatHistory", () => {
     expect(s).toContain("Let me check.")
     expect(s).toContain("⚙")
     expect(s).toContain("bash")
-    expect(s).toContain("→ file.txt")
+    expect(s).toContain("Tool call:")
+    expect(s).toContain("Tool call Result:")
+    expect(s).toContain("file.txt")
   })
   test("reasoning rendered with dim italic marker", () => {
     const out = formatHistory([{ role: "assistant", lines: [
@@ -286,7 +288,8 @@ describe("formatHistory", () => {
       { type: "text", content: "The answer is 4." },
     ]}])
     const s = strip(out)
-    expect(s).toContain("· thinking about the problem...")
+    expect(s).toContain("AI thinking:")
+    expect(s).toContain("thinking about the problem...")
     expect(s).toContain("The answer is 4.")
   })
 })

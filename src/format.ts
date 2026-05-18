@@ -152,25 +152,30 @@ export function formatHistory(
   const header = formatSeparator(`最近 ${items.length} 条消息`)
 
   const blocks: string[] = []
-  for (const entry of items) {
-    const roleColor = entry.role === "user" ? pc.cyan : pc.green
-    const reasoningColor = (s: string) => pc.dim(pc.italic(s))
-    const toolColor = pc.yellow
-    const outputColor = pc.dim
-    const prefix = entry.role === "user" ? "You:  " : "AI:   "
+  const PAD = 18
 
+  for (const entry of items) {
+    const isUser = entry.role === "user"
     const entryLines: string[] = []
-    for (let i = 0; i < entry.lines.length; i++) {
-      const line = entry.lines[i]
-      const indent = i === 0 ? prefix : "      "
-      if (line.type === "text") {
-        entryLines.push(roleColor(indent + line.content))
-      } else if (line.type === "reasoning") {
-        entryLines.push(reasoningColor(indent + "· " + line.content))
-      } else if (line.type === "tool") {
-        entryLines.push(toolColor(indent + line.content))
-      } else {
-        entryLines.push(outputColor(indent + "→ " + line.content))
+    for (const line of entry.lines) {
+      const split = line.content.split("\n")
+      for (let i = 0; i < split.length; i++) {
+        const text = split[i]
+        const cont = " ".repeat(PAD)
+        if (line.type === "text") {
+          const color = isUser ? pc.cyan : pc.green
+          const label = isUser ? "You:" : "AI:"
+          entryLines.push(color((i === 0 ? pc.bold(label.padEnd(PAD)) : cont) + text))
+        } else if (line.type === "reasoning") {
+          const label = "AI thinking:"
+          entryLines.push(pc.dim((i === 0 ? pc.bold(label.padEnd(PAD)) : cont) + pc.italic(text)))
+        } else if (line.type === "tool") {
+          const label = "Tool call:"
+          entryLines.push(pc.yellow((i === 0 ? pc.bold(label.padEnd(PAD)) : cont) + text))
+        } else {
+          const label = "Tool call Result:"
+          entryLines.push(pc.dim((i === 0 ? pc.bold(label.padEnd(PAD)) : cont) + text))
+        }
       }
     }
     blocks.push(entryLines.join("\n"))
