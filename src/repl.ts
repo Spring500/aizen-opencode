@@ -1,5 +1,5 @@
 import * as readline from "node:readline"
-import { select } from "@inquirer/prompts"
+import { select, checkbox } from "@inquirer/prompts"
 import { type Config, type Session, ReplState, createSession } from "./state"
 import { parseSlash, type CommandDef } from "./commands/slash"
 import { createPromptLoop } from "./commands/prompt"
@@ -10,11 +10,12 @@ import {
   setTerminalTitle,
 } from "./format"
 
-export function extractMessageContent(m: any): { role: string; lines: Array<{ type: "text" | "reasoning" | "tool" | "tool-output"; content: string }> } {
+export function extractMessageContent(m: any, visibleTypes?: Set<string>): { role: string; lines: Array<{ type: "text" | "reasoning" | "tool" | "tool-output"; content: string }> } {
   const role = m.info?.role ?? m.role
   const lines: Array<{ type: "text" | "reasoning" | "tool" | "tool-output"; content: string }> = []
 
   for (const part of (m.parts ?? [])) {
+    if (visibleTypes && !visibleTypes.has(part.type)) continue
     if (part.type === "text" && typeof part.text === "string" && part.text) {
       lines.push({ type: "text", content: part.text })
     } else if (part.type === "reasoning" && typeof part.text === "string" && part.text) {
@@ -48,6 +49,7 @@ export async function startREPL(config: Config, session: Session, client: any) {
   let multiline: { active: boolean; buffer: string[] } = { active: false, buffer: [] }
   let activeAbort: AbortController | null = null
   let state = ReplState.Connecting
+  let visibleParts = new Set(["text", "reasoning", "tool"])
 
   // --- Tab 补全：由下方命令注册表动态生成候选列表 ---
   let commandMap = new Map<string, CommandDef>()
@@ -349,8 +351,30 @@ export async function startREPL(config: Config, session: Session, client: any) {
         async handler(args) {
           const limit = args ? parseInt(args) : 10
           const msgs = await client.getMessages(currentSession.id, limit)
-          const items = msgs.map(extractMessageContent)
+          const items = msgs.map((m: any) => extractMessageContent(m, visibleParts))
           print(formatHistory(items, limit))
+        },
+      },
+      {
+        name: "filter",
+        description: "选择 /history 中显示的内容类型",
+        async handler() {
+          const prev = state
+          state = ReplState.SessionPick
+          try {
+            const chosen = await checkbox({
+              message: "选择要显示的内容类型 (空格切换，回车确认)",
+              choices: [
+                { name: "文本回复", value: "text", checked: visibleParts.has("text") },
+                { name: "思考过程", value: "reasoning", checked: visibleParts.has("reasoning") },
+                { name: "工具调用及结果", value: "tool", checked: visibleParts.has("tool") },
+              ],
+            })
+            visibleParts = new Set(chosen as string[])
+          } finally {
+            state = prev
+            recreateReadline()
+          }
         },
       },
       {

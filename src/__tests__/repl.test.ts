@@ -125,4 +125,29 @@ describe("extractMessageContent", () => {
     }
     expect(extractMessageContent(m).role).toBe("assistant")
   })
+
+  test("filters out hidden part types", () => {
+    const m = {
+      info: { role: "assistant" },
+      parts: [
+        { type: "text", text: "visible" },
+        { type: "tool", tool: "bash", state: { status: "completed", title: "cmd", output: "ok" } },
+      ],
+    }
+    const filtered = extractMessageContent(m, new Set(["text"]))
+    expect(filtered.lines).toEqual([{ type: "text", content: "visible" }])
+  })
+
+  test("no filter includes all part types", () => {
+    const m = {
+      info: { role: "assistant" },
+      parts: [
+        { type: "text", text: "hello" },
+        { type: "reasoning", text: "think" },
+        { type: "tool", tool: "bash", state: { status: "completed", title: "cmd", output: "ok" } },
+      ],
+    }
+    const result = extractMessageContent(m)
+    expect(result.lines).toHaveLength(4) // text + reasoning + tool + tool-output
+  })
 })
