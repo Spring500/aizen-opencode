@@ -148,7 +148,7 @@ export function formatDisconnectPermMessage(): string {
 }
 
 export function formatHistory(
-  entries: Array<{ role: string; lines: Array<{ type: "text" | "reasoning" | "tool" | "tool-output"; content: string }> }>,
+  entries: Array<{ role: string; lines: Array<{ type: "text" | "reasoning" | "tool" | "tool-output" | "step-start" | "step-finish" | "file" | "snapshot" | "patch" | "agent" | "retry" | "compaction" | "subtask"; content: string }> }>,
   maxCount = 10,
 ): string {
   if (entries.length === 0) return pc.dim("无历史")
@@ -164,22 +164,71 @@ export function formatHistory(
     const entryLines: string[] = []
     for (const line of entry.lines) {
       let color: (s: string) => string, label: string, italic: boolean
-      if (line.type === "text") {
-        color = isUser ? pc.cyan : pc.green
-        label = isUser ? "你:" : "AI:"
-        italic = false
-      } else if (line.type === "reasoning") {
-        color = pc.dim
-        label = "思考:"
-        italic = true
-      } else if (line.type === "tool") {
-        color = pc.yellow
-        label = "工具:"
-        italic = false
-      } else {
-        color = pc.dim
-        label = "结果:"
-        italic = false
+      switch (line.type) {
+        case "text":
+          color = isUser ? pc.cyan : pc.green
+          label = isUser ? "你:" : "AI:"
+          italic = false
+          break
+        case "reasoning":
+          color = pc.dim
+          label = "思考:"
+          italic = true
+          break
+        case "tool":
+          color = pc.yellow
+          label = "工具:"
+          italic = false
+          break
+        case "tool-output":
+          color = pc.dim
+          label = "结果:"
+          italic = false
+          break
+        case "step-start":
+          color = (s: string) => pc.dim(pc.blue(s))
+          label = "开始:"
+          italic = false
+          break
+        case "step-finish":
+          color = (s: string) => pc.dim(pc.blue(s))
+          label = "结束:"
+          italic = false
+          break
+        case "file":
+          color = pc.magenta
+          label = "文件:"
+          italic = false
+          break
+        case "snapshot":
+          color = pc.dim
+          label = "快照:"
+          italic = false
+          break
+        case "patch":
+          color = (s: string) => pc.dim(pc.magenta(s))
+          label = "补丁:"
+          italic = false
+          break
+        case "agent":
+          color = (s: string) => pc.dim(pc.cyan(s))
+          label = "代理:"
+          italic = false
+          break
+        case "retry":
+          color = (s: string) => pc.dim(pc.red(s))
+          label = "重试:"
+          italic = false
+          break
+        case "compaction":
+          color = pc.dim
+          label = "压缩:"
+          italic = false
+          break
+        default: // subtask
+          color = (s: string) => pc.dim(pc.cyan(s))
+          label = "任务:"
+          italic = false
       }
       const split = line.content.split("\n")
       for (let i = 0; i < split.length; i++) {

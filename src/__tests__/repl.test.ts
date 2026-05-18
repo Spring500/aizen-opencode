@@ -33,10 +33,11 @@ describe("extractMessageContent", () => {
     }
     const result = extractMessageContent(m)
     expect(result.role).toBe("assistant")
-    expect(result.lines).toHaveLength(3)
-    expect(result.lines[0]).toEqual({ type: "tool", content: "✓ [bash] run cmd (completed)" })
-    expect(result.lines[1]).toEqual({ type: "tool-output", content: "ok" })
-    expect(result.lines[2]).toEqual({ type: "text", content: "result" })
+    expect(result.lines).toHaveLength(4) // step-start + tool + tool-output + text
+    expect(result.lines[0]).toEqual({ type: "step-start", content: "开始" })
+    expect(result.lines[1]).toEqual({ type: "tool", content: "✓ [bash] run cmd (completed)" })
+    expect(result.lines[2]).toEqual({ type: "tool-output", content: "ok" })
+    expect(result.lines[3]).toEqual({ type: "text", content: "result" })
   })
 
   test("skips empty text parts", () => {
@@ -151,17 +152,27 @@ describe("extractMessageContent", () => {
     expect(result.lines).toHaveLength(4) // text + reasoning + tool + tool-output
   })
 
-  test("unhandled part types are silently skipped", () => {
+  test("all part types are extracted", () => {
     const m = {
       info: { role: "assistant" },
       parts: [
         { type: "step-start" },
         { type: "text", text: "hello" },
-        { type: "patch", hash: "abc" },
-        { type: "retry", attempt: 1 },
+        { type: "step-finish", reason: "done", cost: 0.001, tokens: { input: 100, output: 50 } },
+        { type: "file", filename: "src/main.ts", mime: "text/typescript" },
+        { type: "snapshot", snapshot: "snap_1" },
+        { type: "patch", hash: "a1b2c3d4e5f6", files: ["a.ts", "b.ts"] },
+        { type: "agent", name: "build", source: { value: "run tests" } },
+        { type: "retry", attempt: 2, error: { message: "timeout" } },
+        { type: "compaction", auto: true },
+        { type: "subtask", agent: "review", prompt: "请审查代码", description: "审查代码" },
       ],
     }
     const result = extractMessageContent(m)
-    expect(result.lines).toEqual([{ type: "text", content: "hello" }])
+    expect(result.lines).toHaveLength(10)
+    expect(result.lines.map(l => l.type)).toEqual([
+      "step-start", "text", "step-finish", "file", "snapshot",
+      "patch", "agent", "retry", "compaction", "subtask",
+    ])
   })
 })

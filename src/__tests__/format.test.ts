@@ -292,6 +292,29 @@ describe("formatHistory", () => {
     expect(s).toContain("thinking about the problem...")
     expect(s).toContain("The answer is 4.")
   })
+  test("new part types rendered with correct prefixes", () => {
+    const out = formatHistory([{ role: "assistant", lines: [
+      { type: "step-start", content: "开始" },
+      { type: "step-finish", content: "done · $0.0010 · in 100/out 50" },
+      { type: "file", content: "src/main.ts (text/typescript)" },
+      { type: "patch", content: "a1b2c3d4 (2 个文件)" },
+      { type: "agent", content: "build \"run tests\"" },
+      { type: "retry", content: "第 2 次 · timeout" },
+      { type: "compaction", content: "自动压缩" },
+      { type: "subtask", content: "review · 审查代码" },
+      { type: "snapshot", content: "snap_1" },
+    ]}])
+    const s = strip(out)
+    expect(s).toContain("开始:")
+    expect(s).toContain("结束:")
+    expect(s).toContain("文件:")
+    expect(s).toContain("补丁:")
+    expect(s).toContain("代理:")
+    expect(s).toContain("重试:")
+    expect(s).toContain("压缩:")
+    expect(s).toContain("任务:")
+    expect(s).toContain("快照:")
+  })
 })
 
 // /sessions 命令输出：Session 列表表格，支持长文本截断

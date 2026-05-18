@@ -10,9 +10,9 @@ import {
   setTerminalTitle,
 } from "./format"
 
-export function extractMessageContent(m: any, visibleTypes?: Set<string>): { role: string; lines: Array<{ type: "text" | "reasoning" | "tool" | "tool-output"; content: string }> } {
+export function extractMessageContent(m: any, visibleTypes?: Set<string>): { role: string; lines: Array<{ type: "text" | "reasoning" | "tool" | "tool-output" | "step-start" | "step-finish" | "file" | "snapshot" | "patch" | "agent" | "retry" | "compaction" | "subtask"; content: string }> } {
   const role = m.info?.role ?? m.role
-  const lines: Array<{ type: "text" | "reasoning" | "tool" | "tool-output"; content: string }> = []
+  const lines: Array<{ type: "text" | "reasoning" | "tool" | "tool-output" | "step-start" | "step-finish" | "file" | "snapshot" | "patch" | "agent" | "retry" | "compaction" | "subtask"; content: string }> = []
 
   for (const part of (m.parts ?? [])) {
     if (visibleTypes && !visibleTypes.has(part.type)) continue
@@ -34,6 +34,32 @@ export function extractMessageContent(m: any, visibleTypes?: Set<string>): { rol
           lines.push({ type: "tool-output", content: truncated })
         }
       }
+    } else if (part.type === "step-start") {
+      lines.push({ type: "step-start", content: part.snapshot ? `快照: ${part.snapshot}` : "开始" })
+    } else if (part.type === "step-finish") {
+      const reason = part.reason ? `原因: ${part.reason}` : ""
+      const cost = part.cost ? `$${part.cost.toFixed(4)}` : ""
+      const tokens = part.tokens ? `in ${part.tokens.input}/out ${part.tokens.output}` : ""
+      const parts = [reason, cost, tokens].filter(Boolean)
+      lines.push({ type: "step-finish", content: parts.join(" · ") || "结束" })
+    } else if (part.type === "file") {
+      const name = part.filename ?? part.url?.split("/").pop() ?? "—"
+      lines.push({ type: "file", content: `${name} (${part.mime ?? "unknown"})` })
+    } else if (part.type === "snapshot") {
+      lines.push({ type: "snapshot", content: part.snapshot })
+    } else if (part.type === "patch") {
+      const n = part.files?.length ?? 0
+      lines.push({ type: "patch", content: `${part.hash?.slice(0, 8) ?? "—"} (${n} 个文件)` })
+    } else if (part.type === "agent") {
+      const desc = part.source?.value ? `"${part.source.value.slice(0, 80)}"` : ""
+      lines.push({ type: "agent", content: `${part.name} ${desc}`.trim() })
+    } else if (part.type === "retry") {
+      const err = part.error?.message ?? "—"
+      lines.push({ type: "retry", content: `第 ${part.attempt ?? "?"} 次 · ${err}` })
+    } else if (part.type === "compaction") {
+      lines.push({ type: "compaction", content: part.auto ? "自动压缩" : "手动压缩" })
+    } else if (part.type === "subtask") {
+      lines.push({ type: "subtask", content: `${part.agent} · ${part.description ?? part.prompt}` })
     }
   }
 
@@ -368,15 +394,15 @@ export async function startREPL(config: Config, session: Session, client: any) {
                 { name: "文本回复", value: "text", checked: visibleParts.has("text") },
                 { name: "思考过程", value: "reasoning", checked: visibleParts.has("reasoning") },
                 { name: "工具调用及结果", value: "tool", checked: visibleParts.has("tool") },
-                { name: "步骤开始 (暂不显示)", value: "step-start", checked: visibleParts.has("step-start") },
-                { name: "步骤结束 (暂不显示)", value: "step-finish", checked: visibleParts.has("step-finish") },
-                { name: "文件引用 (暂不显示)", value: "file", checked: visibleParts.has("file") },
-                { name: "快照 (暂不显示)", value: "snapshot", checked: visibleParts.has("snapshot") },
-                { name: "补丁 (暂不显示)", value: "patch", checked: visibleParts.has("patch") },
-                { name: "子代理 (暂不显示)", value: "agent", checked: visibleParts.has("agent") },
-                { name: "重试 (暂不显示)", value: "retry", checked: visibleParts.has("retry") },
-                { name: "压缩 (暂不显示)", value: "compaction", checked: visibleParts.has("compaction") },
-                { name: "子任务 (暂不显示)", value: "subtask", checked: visibleParts.has("subtask") },
+                { name: "步骤开始", value: "step-start", checked: visibleParts.has("step-start") },
+                { name: "步骤结束", value: "step-finish", checked: visibleParts.has("step-finish") },
+                { name: "文件引用", value: "file", checked: visibleParts.has("file") },
+                { name: "快照", value: "snapshot", checked: visibleParts.has("snapshot") },
+                { name: "补丁", value: "patch", checked: visibleParts.has("patch") },
+                { name: "子代理", value: "agent", checked: visibleParts.has("agent") },
+                { name: "重试", value: "retry", checked: visibleParts.has("retry") },
+                { name: "上下文压缩", value: "compaction", checked: visibleParts.has("compaction") },
+                { name: "子任务", value: "subtask", checked: visibleParts.has("subtask") },
               ],
             })
             visibleParts = new Set(chosen as string[])
