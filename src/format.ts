@@ -158,7 +158,6 @@ export function formatHistory(
   const blocks: string[] = []
   const VPAD = 8
   const MARGIN = "  "
-  const CONT = MARGIN + " ".repeat(VPAD)
 
   for (const entry of items) {
     const isUser = entry.role === "user"
@@ -185,7 +184,7 @@ export function formatHistory(
       const split = line.content.split("\n")
       for (let i = 0; i < split.length; i++) {
         const text = split[i]
-        const prefix = i === 0 ? MARGIN + pc.bold(visualPad(label, VPAD)) : CONT
+        const prefix = i === 0 ? MARGIN + pc.bold(visualPad(label, VPAD)) : ""
         entryLines.push(color(prefix + (italic ? pc.italic(text) : text)))
       }
     }
